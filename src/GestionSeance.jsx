@@ -7,14 +7,20 @@ import {
     getDoc,
     writeBatch,
     increment,
-    deleteDoc,
-    setDoc,
+    updateDoc,
+    arrayUnion,
+    arrayRemove,
     serverTimestamp,
     Timestamp,
-    deleteField
+    deleteField,
+    addDoc,     // <--- NOUVEAU
+    deleteDoc,  // <--- NOUVEAU
+    query,      // <--- NOUVEAU
+    where       // <--- NOUVEAU
 } from 'firebase/firestore';
 
 export default function GestionSeance({ groupe, date, onClose, onEdit }) {
+    // --- ÉTATS ---
     const [inscrits, setInscrits] = useState([]);
     const [invites, setInvites] = useState([]);
     const [waitingList, setWaitingList] = useState([]);
@@ -23,23 +29,28 @@ export default function GestionSeance({ groupe, date, onClose, onEdit }) {
     const [statuses, setStatuses] = useState({});
     const [initialStatus, setInitialStatus] = useState({});
 
-    // Liens : Qui remplace qui ? { [guestId]: titulaireId }
+    // Liens : { [guestId]: titulaireId }
     const [replacementLinks, setReplacementLinks] = useState({});
-    // Origines : D'où vient l'invité ? { [guestId]: 'waiting' | 'manual' }
+    // Origines : { [guestId]: 'waiting' | 'manual' }
     const [guestOrigins, setGuestOrigins] = useState({});
 
     const [loading, setLoading] = useState(true);
     const [estAnnule, setEstAnnule] = useState(false);
 
-    // États pour les sélecteurs
-    const [targetAbsentId, setTargetAbsentId] = useState(null); // ID du titulaire à remplacer
-    const [selectedStudentId, setSelectedStudentId] = useState(""); // Pour ajout remplacement/surnombre
-    const [selectedWaitlistId, setSelectedWaitlistId] = useState(""); // Pour ajout file d'attente
+    // Pour stocker l'ID du document d'annulation s'il existe
+    const [annulationDocId, setAnnulationDocId] = useState(null);
 
-    // IDs
+    // --- SÉLECTEURS ---
+    const [addMode, setAddMode] = useState(null);
+    const [targetSlotId, setTargetSlotId] = useState(null);
+    const [selectedStudentId, setSelectedStudentId] = useState("");
+    const [selectedWaitlistId, setSelectedWaitlistId] = useState("");
+
+    const isExceptionnel = groupe.type === 'ajout';
+
+    // FORMATAGE DE L'ID
     const dateStr = date.toLocaleDateString('fr-CA');
-    const seanceId = `${dateStr}_${groupe.id}`;
-    const exceptionId = `${dateStr}_${groupe.id}_CANCEL`;
+    const seanceId = isExceptionnel ? groupe.id : `${dateStr}_${groupe.id}`;
 
     useEffect(() => {
         chargerDonnees();
@@ -47,21 +58,38 @@ export default function GestionSeance({ groupe, date, onClose, onEdit }) {
 
     const chargerDonnees = async () => {
         try {
-            if (groupe.type === 'standard') {
-                const exceptionDoc = await getDoc(doc(db, "exceptions", exceptionId));
-                setEstAnnule(exceptionDoc.exists());
+            // 1. Vérif Annulation (si standard)
+            // On cherche s'il existe une exception de type "annulation" pour ce groupe et cette date
+            if (!isExceptionnel) {
+                const q = query(
+                    collection(db, "exceptions"),
+                    where("groupeId", "==", groupe.id),
+                    where("date", "==", dateStr),
+                    where("type", "==", "annulation")
+                );
+                const exSnap = await getDocs(q);
+                if (!exSnap.empty) {
+                    setEstAnnule(true);
+                    setAnnulationDocId(exSnap.docs[0].id);
+                } else {
+                    setEstAnnule(false);
+                    setAnnulationDocId(null);
+                }
             }
 
+            // 2. Charger TOUS les élèves
             const elevesSnapshot = await getDocs(collection(db, "eleves"));
             const tous = elevesSnapshot.docs.map(d => ({ id: d.id, ...d.data() }));
             tous.sort((a, b) => a.nom.localeCompare(b.nom));
             setAllStudents(tous);
 
+            // 3. Charger l'Attendance
             const attendanceDoc = await getDoc(doc(db, "attendance", seanceId));
+
+            // Valeurs par défaut
             let savedStatus = {};
             let savedReplacementLinks = {};
             let savedGuestOrigins = {};
-            let savedGuestIds = [];
             let savedWaitingIds = [];
 
             if (attendanceDoc.exists()) {
@@ -70,15 +98,23 @@ export default function GestionSeance({ groupe, date, onClose, onEdit }) {
                 savedReplacementLinks = data.replacementLinks || {};
                 savedGuestOrigins = data.guestOrigins || {};
                 savedWaitingIds = data.waitingList || [];
-
-                savedGuestIds = Object.keys(savedStatus).filter(id => {
-                    const student = tous.find(s => s.id === id);
-                    return student && (!student.enrolledGroupIds || !student.enrolledGroupIds.includes(groupe.id));
-                });
             }
 
-            const listeInscrits = tous.filter(e => e.enrolledGroupIds && e.enrolledGroupIds.includes(groupe.id));
-            const listeInvites = savedGuestIds.map(id => tous.find(s => s.id === id)).filter(Boolean);
+            // A. Identification des TITULAIRES
+            const listeInscrits = isExceptionnel
+                ? []
+                : tous.filter(e => e.enrolledGroupIds && e.enrolledGroupIds.includes(groupe.id));
+
+            // B. Identification des INVITÉS
+            const presentIds = Object.keys(savedStatus).filter(k => savedStatus[k] === 'present');
+            const guestIds = presentIds.filter(pid => !listeInscrits.some(i => i.id === pid));
+
+            const listeInvites = guestIds.map(id => {
+                const found = tous.find(s => s.id === id);
+                return found || { id: id, nom: 'Inconnu', prenom: 'Utilisateur', absARemplacer: 0 };
+            });
+
+            // C. File d'attente
             const listeAttente = savedWaitingIds.map(id => tous.find(s => s.id === id)).filter(Boolean);
 
             setInscrits(listeInscrits);
@@ -87,6 +123,7 @@ export default function GestionSeance({ groupe, date, onClose, onEdit }) {
             setReplacementLinks(savedReplacementLinks);
             setGuestOrigins(savedGuestOrigins);
 
+            // Initialisation des statuts locaux
             const finalStatus = { ...savedStatus };
             listeInscrits.forEach(e => {
                 if (!finalStatus[e.id]) finalStatus[e.id] = 'present';
@@ -105,16 +142,90 @@ export default function GestionSeance({ groupe, date, onClose, onEdit }) {
         }
     };
 
+    // --- NOUVELLES FONCTIONS D'ADMINISTRATION ---
+
+    // 1. ANNULER JUSTE CETTE SÉANCE (Ponctuel)
+    const handleAnnulerUnique = async () => {
+        if (!confirm(`Voulez-vous vraiment ANNULER la séance du ${date.toLocaleDateString()} ?\n\nElle apparaîtra barrée sur le planning.`)) return;
+
+        try {
+            setLoading(true);
+            await addDoc(collection(db, "exceptions"), {
+                date: dateStr,
+                groupeId: groupe.id,
+                type: "annulation"
+            });
+            await chargerDonnees(); // Recharge pour afficher l'état annulé
+            if (onClose) onClose(); // Optionnel : fermer ou rester
+        } catch (e) {
+            console.error(e);
+            alert("Erreur lors de l'annulation.");
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    // 2. RÉTABLIR UNE SÉANCE ANNULÉE
+    const handleRetablir = async () => {
+        if (!annulationDocId) return;
+        if (!confirm("Rétablir cette séance ?")) return;
+
+        try {
+            setLoading(true);
+            await deleteDoc(doc(db, "exceptions", annulationDocId));
+            await chargerDonnees();
+        } catch (e) {
+            console.error(e);
+            alert("Erreur lors du rétablissement.");
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    // 3. SUPPRIMER LE GROUPE DÉFINITIVEMENT (Si erreur de création)
+    const handleSupprimerDefinitif = async () => {
+        const confirmMsg = isExceptionnel
+            ? "Voulez-vous supprimer définitivement cette séance unique ?"
+            : "⚠️ ATTENTION : Vous allez supprimer TOUT le cours récurrent (toutes les dates de l'année).\n\nConfirmer la suppression définitive ?";
+
+        if (confirm(confirmMsg)) {
+            try {
+                setLoading(true);
+                // Si c'est une exception (ajout), on supprime l'exception
+                // Si c'est un groupe standard, on supprime le groupe
+                const collectionName = isExceptionnel ? "exceptions" : "groupes";
+                const docId = isExceptionnel ? (groupe.originalExceptionId || groupe.id) : groupe.id;
+
+                await deleteDoc(doc(db, collectionName, docId));
+
+                onClose(); // On ferme la modale
+                window.location.reload(); // On recharge pour rafraîchir le planning complet
+            } catch (e) {
+                console.error(e);
+                alert("Erreur lors de la suppression.");
+                setLoading(false);
+            }
+        }
+    };
+
+
+    // --- LOGIQUE PRESENCE (Reste inchangé) ---
     const toggleStatus = (eleveId) => {
-        const newStatus = statuses[eleveId] === 'present' ? 'absent' : 'present';
+        const currentStatus = statuses[eleveId];
+        const newStatus = currentStatus === 'present' ? 'absent' : 'present';
 
-        setStatuses(prev => ({
-            ...prev,
-            [eleveId]: newStatus
-        }));
-
-        // Si le titulaire revient (Présent), on casse le lien avec son remplaçant éventuel
         if (newStatus === 'present') {
+            const nbTitulairesPresents = inscrits.filter(i => statuses[i.id] === 'present').length;
+            const nbInvites = invites.length;
+            const totalOccupation = nbTitulairesPresents + nbInvites;
+            const placesTotales = typeof groupe.places === 'number' ? groupe.places : 10;
+
+            if (totalOccupation + 1 > placesTotales) {
+                if (!confirm(`⚠️ Le cours est complet (${placesTotales} places).\nVoulez-vous ajouter cette personne en SURNOMBRE ?`)) {
+                    return;
+                }
+            }
+
             const guestIdLinked = Object.keys(replacementLinks).find(key => replacementLinks[key] === eleveId);
             if (guestIdLinked) {
                 const newLinks = { ...replacementLinks };
@@ -122,126 +233,135 @@ export default function GestionSeance({ groupe, date, onClose, onEdit }) {
                 setReplacementLinks(newLinks);
             }
         }
+        setStatuses(prev => ({ ...prev, [eleveId]: newStatus }));
     };
 
-    // --- ACTIONS PRINCIPALES ---
+    // ... (Le reste des fonctions preparerAjout, validerAjout, etc. reste identique) ...
+    // Je copie juste les fonctions inchangées pour que le code soit valide si copié/collé,
+    // mais je vais abréger ici pour la lisibilité de la réponse.
 
-    // 1. Ajouter un invité (Remplacement ou Surnombre)
-    const validerAjoutInvite = () => {
+    const preparerAjout = (mode, targetId = null) => {
+        setAddMode(mode);
+        setTargetSlotId(targetId);
+        setSelectedStudentId("");
+    };
+
+    const validerAjout = async () => {
         if (!selectedStudentId) return;
         const eleve = allStudents.find(e => e.id === selectedStudentId);
         if (!eleve) return;
 
-        // Est-ce qu'il vient de la file d'attente ? (Soit sélectionné ici, soit détecté dans la liste actuelle)
+        if (addMode === 'permanent') {
+            if (isExceptionnel) {
+                alert("Impossible d'inscrire un titulaire à l'année sur une séance unique.");
+                return;
+            }
+            if (confirm(`Inscrire définitivement ${eleve.prenom} ${eleve.nom} à ce cours (Toute l'année) ?`)) {
+                try {
+                    await updateDoc(doc(db, "eleves", eleve.id), {
+                        enrolledGroupIds: arrayUnion(groupe.id)
+                    });
+                    chargerDonnees();
+                    setAddMode(null);
+                } catch (e) { console.error(e); alert("Erreur"); }
+            }
+            return;
+        }
+
         const vientDeFileAttente = waitingList.find(w => w.id === eleve.id);
-
-        // Ajout aux listes
-        setInvites(prev => [...prev, eleve]);
-        setStatuses(prev => ({ ...prev, [eleve.id]: 'present' }));
-
-        // Retrait de la file d'attente si présent
         if (vientDeFileAttente) {
             setWaitingList(prev => prev.filter(w => w.id !== eleve.id));
-            // On note l'origine "waiting"
             setGuestOrigins(prev => ({ ...prev, [eleve.id]: 'waiting' }));
         } else {
-            // Sinon origine "manual"
             setGuestOrigins(prev => ({ ...prev, [eleve.id]: 'manual' }));
         }
 
-        // Création du lien si c'était un remplacement ciblé
-        if (targetAbsentId) {
-            setReplacementLinks(prev => ({ ...prev, [eleve.id]: targetAbsentId }));
+        setInvites(prev => [...prev, eleve]);
+        setStatuses(prev => ({ ...prev, [eleve.id]: 'present' }));
+
+        if (addMode === 'replace' && targetSlotId) {
+            setReplacementLinks(prev => ({ ...prev, [eleve.id]: targetSlotId }));
         }
 
-        // Reset
-        setTargetAbsentId(null);
+        setAddMode(null);
+        setTargetSlotId(null);
         setSelectedStudentId("");
     };
 
-    // 2. Retirer un invité
+    const desinscrireTitulaire = async (eleve) => {
+        if (confirm(`⚠️ ATTENTION : Désinscrire ${eleve.prenom} définitivement ?`)) {
+            try {
+                const batch = writeBatch(db);
+                batch.update(doc(db, "eleves", eleve.id), { enrolledGroupIds: arrayRemove(groupe.id) });
+                batch.update(doc(db, "attendance", seanceId), {
+                    [`status.${eleve.id}`]: deleteField(),
+                    [`replacementLinks.${eleve.id}`]: deleteField()
+                });
+                await batch.commit();
+
+                const newStatuses = { ...statuses };
+                delete newStatuses[eleve.id];
+                setStatuses(newStatuses);
+
+                setInscrits(prev => prev.filter(i => i.id !== eleve.id));
+            } catch (e) { console.error(e); }
+        }
+    };
+
     const retirerInvite = (eleveId) => {
         const origine = guestOrigins[eleveId];
-        const message = origine === 'waiting'
-            ? "Retirer cet élève ? Il retournera dans la file d'attente."
-            : "Retirer cet élève définitivement de la séance ?";
+        const msg = origine === 'waiting' ? "Retourner en file d'attente ?" : "Retirer de la séance ?";
 
-        if (confirm(message)) {
+        if (confirm(msg)) {
             const eleve = invites.find(i => i.id === eleveId);
-
-            // Suppression visuelle
             setInvites(prev => prev.filter(e => e.id !== eleveId));
+
             const newStatuses = { ...statuses };
             delete newStatuses[eleveId];
             setStatuses(newStatuses);
 
-            // Nettoyage des liens/origines
             const newLinks = { ...replacementLinks };
             delete newLinks[eleveId];
             setReplacementLinks(newLinks);
 
-            const newOrigins = { ...guestOrigins };
-            delete newOrigins[eleveId];
-            setGuestOrigins(newOrigins);
-
-            // LOGIQUE DE RETOUR FILE D'ATTENTE
-            if (origine === 'waiting' && eleve) {
-                // On vérifie qu'il n'y est pas déjà pour éviter les doublons
-                if (!waitingList.some(w => w.id === eleve.id)) {
-                    setWaitingList(prev => [...prev, eleve]);
-                }
+            if (origine === 'waiting' && eleve && !waitingList.some(w => w.id === eleve.id)) {
+                setWaitingList(prev => [...prev, eleve]);
             }
         }
     };
 
-    // 3. Gestion File d'Attente (Ajout/Suppression)
     const ajouterAuWaitingList = () => {
         if (!selectedWaitlistId) return;
-        if (waitingList.find(w => w.id === selectedWaitlistId)) return;
-
         const eleve = allStudents.find(e => e.id === selectedWaitlistId);
-        if (eleve) {
+        if (eleve && !waitingList.find(w => w.id === eleve.id)) {
             setWaitingList(prev => [...prev, eleve]);
             setSelectedWaitlistId("");
         }
     };
-
-    const supprimerDuWaitingList = (eleveId) => {
-        if (confirm("Supprimer de la file d'attente ?")) {
-            setWaitingList(prev => prev.filter(w => w.id !== eleveId));
-        }
-    };
-
-    // 4. Raccourci "Promouvoir" depuis la file d'attente
-    const promouvoirDepuisWaiting = (eleve) => {
-        // On simule une sélection et une validation
+    const supprimerDuWaitingList = (id) => setWaitingList(prev => prev.filter(w => w.id !== id));
+    const promouvoirWaiting = (eleve) => {
         setSelectedStudentId(eleve.id);
-        // On doit le faire dans un useEffect ou appeler directement la logique
-        // Pour simplifier, on reproduit la logique de validerAjoutInvite ici :
-
-        setInvites(prev => [...prev, eleve]);
-        setStatuses(prev => ({ ...prev, [eleve.id]: 'present' }));
+        setAddMode('guest');
         setWaitingList(prev => prev.filter(w => w.id !== eleve.id));
         setGuestOrigins(prev => ({ ...prev, [eleve.id]: 'waiting' }));
-        setSelectedStudentId(""); // Nettoyage au cas où
+        setInvites(prev => [...prev, eleve]);
+        setStatuses(prev => ({ ...prev, [eleve.id]: 'present' }));
+        setSelectedStudentId("");
+        setAddMode(null);
     };
 
-
-    // --- SAUVEGARDE ---
     const sauvegarder = async () => {
         setLoading(true);
         try {
             const batch = writeBatch(db);
-            const attendanceRef = doc(db, "attendance", seanceId);
+            const ref = doc(db, "attendance", seanceId);
             const statusToSave = { ...statuses };
 
             Object.keys(initialStatus).forEach(id => {
-                if (statuses[id] === undefined) {
-                    statusToSave[id] = deleteField();
-                }
+                if (statuses[id] === undefined) statusToSave[id] = deleteField();
             });
 
-            batch.set(attendanceRef, {
+            batch.set(ref, {
                 date: dateStr,
                 groupeId: groupe.id,
                 nomGroupe: groupe.nom,
@@ -249,359 +369,324 @@ export default function GestionSeance({ groupe, date, onClose, onEdit }) {
                 status: statusToSave,
                 waitingList: waitingList.map(e => e.id),
                 replacementLinks: replacementLinks,
-                guestOrigins: guestOrigins, // On sauvegarde l'origine !
+                guestOrigins: guestOrigins,
                 updatedAt: serverTimestamp()
             }, { merge: true });
 
-            // Calcul Crédits
-            const allInvolvedIds = new Set([
-                ...Object.keys(initialStatus),
-                ...Object.keys(statuses)
-            ]);
+            const allIds = new Set([...Object.keys(initialStatus), ...Object.keys(statuses)]);
 
-            allInvolvedIds.forEach(eleveId => {
-                const oldVal = initialStatus[eleveId];
-                const newVal = statuses[eleveId];
-                const effectiveNewVal = newVal || 'removed';
+            allIds.forEach(eid => {
+                // --- CORRECTION DÉBUT ---
+                // On vérifie si l'élève existe encore dans la base avant de toucher à ses crédits
+                const studentExists = allStudents.find(s => s.id === eid);
 
-                if (oldVal === effectiveNewVal) return;
+                if (!studentExists) {
+                    console.warn(`L'élève ${eid} n'existe plus, impossible de mettre à jour ses crédits.`);
+                    return; // On passe au suivant sans rien faire, ce qui évite le crash
+                }
+                // --- CORRECTION FIN ---
 
-                const estInscrit = inscrits.some(e => e.id === eleveId);
-                let creditChange = 0;
+                const oldS = initialStatus[eid];
+                const newS = statuses[eid];
+                const finalNew = newS || 'removed';
 
-                if (estInscrit) {
-                    if (effectiveNewVal === 'absent' && oldVal !== 'absent') creditChange = 1;
-                    else if (effectiveNewVal === 'present' && oldVal === 'absent') creditChange = -1;
+                if (oldS === finalNew) return;
+
+                const isTitulaire = inscrits.some(e => e.id === eid);
+                let change = 0;
+
+                if (isTitulaire) {
+                    if (finalNew === 'absent' && oldS !== 'absent') change = 1;
+                    else if (finalNew === 'present' && oldS === 'absent') change = -1;
                 } else {
-                    if (effectiveNewVal === 'present' && oldVal !== 'present') creditChange = -1;
-                    else if (effectiveNewVal !== 'present' && oldVal === 'present') creditChange = 1;
+                    if (finalNew === 'present' && oldS !== 'present') change = -1;
+                    else if (finalNew !== 'present' && oldS === 'present') change = 1;
                 }
 
-                if (creditChange !== 0) {
-                    const eleveRef = doc(db, "eleves", eleveId);
-                    batch.update(eleveRef, { absARemplacer: increment(creditChange) });
+                if (change !== 0) {
+                    batch.update(doc(db, "eleves", eid), { absARemplacer: increment(change) });
                 }
             });
 
             await batch.commit();
-            alert("Modifications enregistrées ! ✅");
+            alert("Sauvegardé !");
             onClose();
-
-        } catch (error) {
-            console.error(error);
-            alert("Erreur : " + error.message);
-        } finally {
-            setLoading(false);
-        }
+        } catch (e) { console.error(e); alert("Erreur sauvegarde"); }
+        finally { setLoading(false); }
     };
 
-    const handleCancelOrDelete = async () => {
-        if (groupe.type === 'ajout') {
-            if (confirm("Voulez-vous SUPPRIMER définitivement cette séance ?")) {
-                await deleteDoc(doc(db, "exceptions", groupe.originalExceptionId));
-                onClose();
-            }
+    // --- RENDER ---
+    const capacity = typeof groupe.places === 'number' ? groupe.places : 10;
+    const validTitulaireIds = inscrits.map(t => t.id);
+    const linkedGuestIds = Object.keys(replacementLinks).filter(guestId => {
+        const titulaireId = replacementLinks[guestId];
+        return validTitulaireIds.includes(titulaireId);
+    });
+    const freeGuests = invites.filter(i => !linkedGuestIds.includes(i.id));
+
+    const slotsRender = [];
+    if (!isExceptionnel) {
+        inscrits.forEach(titulaire => slotsRender.push({ type: 'titulaire', student: titulaire }));
+    }
+    const baseOccupied = isExceptionnel ? 0 : inscrits.length;
+    const slotsAvailableForGuests = Math.max(0, capacity - baseOccupied);
+    for (let i = 0; i < slotsAvailableForGuests; i++) {
+        if (i < freeGuests.length) {
+            slotsRender.push({ type: 'guest_in_slot', student: freeGuests[i] });
         } else {
-            if (confirm(`Voulez-vous vraiment ANNULER le cours du ${date.toLocaleDateString()} ?`)) {
-                await setDoc(doc(db, "exceptions", exceptionId), { date: dateStr, groupeId: groupe.id, type: "annulation" });
-                onClose();
-            }
+            slotsRender.push({ type: 'empty' });
         }
-    };
+    }
+    const overflowGuests = freeGuests.slice(slotsAvailableForGuests);
+    const totalPresents = inscrits.filter(i => statuses[i.id] === 'present').length + invites.length;
 
-    const retablirLeCours = async () => {
-        if (confirm(`Voulez-vous RÉTABLIR ce cours ?`)) {
-            await deleteDoc(doc(db, "exceptions", exceptionId));
-            onClose();
-        }
-    };
+    const RenderSelector = () => (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 backdrop-blur-[1px]" onClick={() => setAddMode(null)}>
+            <div className="bg-white p-6 rounded-xl shadow-2xl border-2 border-teal-500 w-96" onClick={e => e.stopPropagation()}>
+                <h4 className="text-lg font-bold text-teal-800 mb-4 uppercase flex justify-between items-center border-b pb-2">
+                    {addMode === 'permanent' ? "Inscrire à l'année" : "Ajouter un participant"}
+                    <button onClick={() => setAddMode(null)} className="text-gray-400 hover:text-gray-600 text-xl">✕</button>
+                </h4>
+                <select autoFocus className="w-full text-base border-gray-300 border p-3 rounded-lg mb-6 outline-none" value={selectedStudentId} onChange={e => setSelectedStudentId(e.target.value)}>
+                    <option value="">-- Sélectionner --</option>
+                    {allStudents
+                        .filter(s => !inscrits.find(i => i.id === s.id) && !invites.find(i => i.id === s.id))
+                        .map(s => <option key={s.id} value={s.id}>{s.nom} {s.prenom} ({s.absARemplacer} Cr.)</option>)}
+                </select>
+                <div className="flex gap-3 justify-end">
+                    <button onClick={() => setAddMode(null)} className="px-4 py-2 rounded-lg text-gray-600 hover:bg-gray-100 font-bold">Annuler</button>
+                    <button onClick={validerAjout} disabled={!selectedStudentId} className="px-6 py-2 bg-teal-600 text-white rounded-lg font-bold hover:bg-teal-700">Valider</button>
+                </div>
+            </div>
+        </div>
+    );
 
-    // Stats
-    const nbTitulairesPresents = inscrits.filter(e => statuses[e.id] === 'present').length;
-    const nbInvites = invites.length;
-    const totalPresents = nbTitulairesPresents + nbInvites;
-    const isOver = totalPresents > groupe.places;
-
-    if (loading) return <div className="fixed inset-0 bg-black/80 flex text-white items-center justify-center z-50">Chargement...</div>;
+    if (loading) return <div className="fixed inset-0 bg-black/80 flex items-center justify-center text-white z-50">Chargement...</div>;
 
     return (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[95vh] relative">
+            {addMode && <RenderSelector />}
 
-                {/* HEADER */}
-                <div className={`p-6 text-white flex justify-between items-start ${estAnnule ? 'bg-gray-600' : 'bg-teal-900'}`}>
-                    <div>
-                        <h2 className="text-2xl font-bold font-playfair">
-                            {groupe.nom}
-                            {estAnnule && <span className="ml-3 text-sm bg-red-500 text-white px-2 py-1 rounded uppercase">Annulé</span>}
-                        </h2>
-                        <p className="text-teal-100 mt-1 capitalize">
-                            {date.toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' })} • {groupe.heureDebut}
-                        </p>
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-5xl overflow-hidden flex flex-col max-h-[95vh] relative">
+
+                {/* HEADER AVEC BOUTONS D'ACTION */}
+                <div className={`p-6 text-white flex justify-between items-start ${estAnnule ? 'bg-gray-600' : (isExceptionnel ? 'bg-purple-700' : 'bg-teal-900')}`}>
+                    <div className="flex-1">
+                        <div className="flex items-center gap-2">
+                            <h2 className="text-2xl font-bold font-playfair">{groupe.nom} {estAnnule && "(ANNULÉ)"}</h2>
+                            {isExceptionnel && <span className="text-[10px] bg-white/20 px-2 py-0.5 rounded uppercase font-bold tracking-wider">Séance Unique</span>}
+                        </div>
+
+                        <div className="mt-1">
+                            <p className="text-teal-100 text-sm capitalize">
+                                {date.toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' })} • {groupe.heureDebut}
+                            </p>
+                            {groupe.theme && <p className="text-sm italic text-yellow-200 mt-1 border-l-2 border-yellow-200 pl-2">Thème : "{groupe.theme}"</p>}
+                        </div>
+
+                        {/* --- ZONE D'ACTIONS MODIFICATION / ANNULATION --- */}
+                        <div className="flex gap-2 mt-4 flex-wrap">
+                            {/* On affiche le bouton Modifier pour TOUT LE MONDE (plus de condition isExceptionnel) */}
+                            {onEdit && (
+                                <button
+                                    onClick={() => onEdit(groupe)}
+                                    className="bg-white text-purple-800 px-3 py-1.5 rounded-lg text-xs font-bold shadow-md hover:bg-gray-100 transition flex items-center gap-2"
+                                >
+                                    ✏️ Modifier (Horaires, Places...)
+                                </button>
+                            )}
+
+                            {/* Cas Standard : Annuler juste cette date */}
+                            {!isExceptionnel && !estAnnule && (
+                                <button
+                                    onClick={handleAnnulerUnique}
+                                    className="bg-red-500/80 hover:bg-red-500 text-white px-3 py-1.5 rounded-lg text-xs font-bold shadow-md transition flex items-center gap-2 border border-red-400"
+                                >
+                                    🚫 Annuler cette séance (Une fois)
+                                </button>
+                            )}
+
+                            {/* Cas Standard Annulé : Rétablir */}
+                            {!isExceptionnel && estAnnule && (
+                                <button
+                                    onClick={handleRetablir}
+                                    className="bg-green-600 hover:bg-green-500 text-white px-3 py-1.5 rounded-lg text-xs font-bold shadow-md transition flex items-center gap-2"
+                                >
+                                    ✅ Rétablir la séance
+                                </button>
+                            )}
+                        </div>
                     </div>
-                    <button onClick={onClose} className="bg-white/20 hover:bg-white/40 text-white rounded-full w-10 h-10 flex items-center justify-center font-bold text-xl backdrop-blur-sm">✕</button>
+
+                    <button onClick={onClose} className="bg-white/20 hover:bg-white/40 rounded-full w-10 h-10 flex items-center justify-center font-bold">✕</button>
                 </div>
-
-                {/* DASHBOARD CAPACITÉ */}
-                {!estAnnule && (
-                    <div className="bg-gray-50 border-b p-4">
-                        <div className="flex justify-between items-end mb-1">
-                            <span className="text-xs font-bold text-gray-500 uppercase">Taux de remplissage</span>
-                            <span className={`text-sm font-bold ${isOver ? 'text-red-600' : 'text-gray-800'}`}>
-                                {totalPresents} / {groupe.places} participants
-                            </span>
-                        </div>
-                        <div className="w-full bg-gray-200 rounded-full h-2.5">
-                            <div
-                                className={`h-2.5 rounded-full transition-all duration-500 ${isOver ? 'bg-red-500' : 'bg-teal-500'}`}
-                                style={{ width: `${Math.min((totalPresents / groupe.places) * 100, 100)}%` }}
-                            ></div>
-                        </div>
-                        {isOver && <p className="text-xs text-red-500 mt-1 font-bold text-right">⚠️ Surbooking (+{totalPresents - groupe.places})</p>}
-                    </div>
-                )}
 
                 {/* CONTENU */}
-                <div className="flex-1 overflow-y-auto p-4 bg-gray-100 space-y-4">
+                <div className="flex-1 overflow-y-auto p-6 bg-gray-100 relative">
 
-                    {estAnnule ? (
-                        <div className="flex flex-col items-center justify-center h-64 text-gray-500">
-                            <div className="text-4xl mb-4">🚫</div>
-                            <p className="text-lg">Ce cours est annulé.</p>
-                        </div>
-                    ) : (
-                        <>
-                            {/* --- 1. LISTE TITULAIRES --- */}
-                            <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-                                <div className="bg-teal-50 px-4 py-3 border-b border-teal-100 flex justify-between items-center">
-                                    <h3 className="text-sm font-bold text-teal-900 uppercase tracking-wider">Titulaires</h3>
-                                    <span className="text-xs font-bold bg-white text-teal-800 px-2 py-0.5 rounded-full border border-teal-100">
-                                        {inscrits.length}
-                                    </span>
-                                </div>
-
-                                <div className="divide-y divide-gray-50">
-                                    {inscrits.map(eleve => {
-                                        const isPresent = statuses[eleve.id] === 'present';
-
-                                        // Recherche du remplaçant lié
-                                        const replacementGuestId = Object.keys(replacementLinks).find(guestId => replacementLinks[guestId] === eleve.id);
-                                        const replacementGuest = replacementGuestId ? invites.find(i => i.id === replacementGuestId) : null;
-
-                                        return (
-                                            <div key={eleve.id} className="relative transition-all">
-                                                {/* Ligne Titulaire */}
-                                                <div className={`p-3 flex items-center justify-between ${!isPresent ? 'bg-gray-50/50' : ''}`}>
-                                                    <div className="flex items-center gap-3" onClick={() => toggleStatus(eleve.id)}>
-                                                        <div className={`cursor-pointer w-3 h-3 rounded-full ${isPresent ? 'bg-teal-500' : 'bg-transparent border-2 border-gray-300 border-dashed'}`}></div>
-                                                        <div className={`cursor-pointer ${!isPresent ? 'opacity-50' : ''}`}>
-                                                            <div className="font-bold text-gray-800 text-sm">{eleve.nom} {eleve.prenom}</div>
-                                                            <div className="text-xs text-gray-400">{isPresent ? 'Titulaire' : '❌ Absent'}</div>
-                                                        </div>
-                                                    </div>
-
-                                                    <div className="flex items-center gap-2">
-                                                        {/* Bouton Remplacer (+) */}
-                                                        {!isPresent && !replacementGuest && (
-                                                            <button
-                                                                onClick={() => setTargetAbsentId(eleve.id)}
-                                                                className="text-xs font-bold bg-purple-100 text-purple-700 w-8 h-8 rounded-full flex items-center justify-center hover:bg-purple-200 border border-purple-200 shadow-sm"
-                                                                title="Ajouter un remplaçant pour cette place"
-                                                            >
-                                                                +
-                                                            </button>
-                                                        )}
-
-                                                        <button
-                                                            onClick={() => toggleStatus(eleve.id)}
-                                                            className={`text-xs font-bold px-3 py-1.5 rounded transition-all ${isPresent ? 'bg-red-50 text-red-600 hover:bg-red-100' : 'bg-teal-50 text-teal-600 hover:bg-teal-100'}`}
-                                                        >
-                                                            {isPresent ? 'Absent' : 'Présent'}
-                                                        </button>
-                                                    </div>
-                                                </div>
-
-                                                {/* Ligne Remplaçant Lié */}
-                                                {!isPresent && replacementGuest && (
-                                                    <div className="ml-6 pl-4 border-l-2 border-purple-200 mb-2 py-1 pr-2 bg-purple-50/50 rounded-r-lg flex justify-between items-center animate-in fade-in slide-in-from-top-1">
-                                                        <div className="flex items-center gap-2">
-                                                            <span className="text-purple-400 text-lg">↳</span>
-                                                            <div>
-                                                                <div className="font-bold text-purple-900 text-sm">{replacementGuest.nom} {replacementGuest.prenom}</div>
-                                                                <div className="text-[10px] text-purple-600 font-bold uppercase">Remplaçant</div>
-                                                            </div>
-                                                        </div>
-                                                        <button
-                                                            onClick={(e) => { e.stopPropagation(); retirerInvite(replacementGuest.id); }}
-                                                            className="w-6 h-6 flex items-center justify-center bg-white text-purple-300 hover:text-red-500 rounded-full hover:bg-red-50 shadow-sm"
-                                                        >
-                                                            ✕
-                                                        </button>
-                                                    </div>
-                                                )}
-
-                                                {/* Zone Sélection pour Remplacement Ciblé */}
-                                                {!isPresent && targetAbsentId === eleve.id && (
-                                                    <div className="ml-6 p-2 bg-purple-100 rounded-lg mb-2 animate-in zoom-in-95 border border-purple-300">
-                                                        <div className="text-xs font-bold text-purple-800 mb-1">Qui remplace {eleve.prenom} ?</div>
-                                                        <div className="flex gap-2">
-                                                            <select
-                                                                autoFocus
-                                                                className="flex-1 text-sm border-gray-300 rounded focus:ring-purple-500"
-                                                                value={selectedStudentId}
-                                                                onChange={(e) => setSelectedStudentId(e.target.value)}
-                                                            >
-                                                                <option value="">-- Choisir un élève --</option>
-                                                                {allStudents
-                                                                    .filter(s => !inscrits.find(i => i.id === s.id) && !invites.find(i => i.id === s.id))
-                                                                    .map(s => (
-                                                                        <option key={s.id} value={s.id}>
-                                                                            {s.nom} {s.prenom} ({s.absARemplacer} Cr.)
-                                                                        </option>
-                                                                    ))}
-                                                            </select>
-                                                            <button onClick={validerAjoutInvite} className="bg-purple-600 text-white px-3 py-1 rounded font-bold text-xs">OK</button>
-                                                            <button onClick={() => setTargetAbsentId(null)} className="text-gray-500 px-2 text-xs">Annuler</button>
-                                                        </div>
-                                                    </div>
-                                                )}
-                                            </div>
-                                        );
-                                    })}
-                                </div>
+                    {/* MASQUE SI ANNULÉ */}
+                    {estAnnule && (
+                        <div className="absolute inset-0 bg-white/60 z-10 flex items-center justify-center backdrop-blur-sm">
+                            <div className="bg-white p-6 rounded-xl shadow-2xl text-center border-2 border-red-100">
+                                <h3 className="text-xl font-bold text-gray-800 mb-2">Séance Annulée</h3>
+                                <p className="text-gray-500 mb-4 text-sm">Ce créneau a été annulé exceptionnellement pour cette date.</p>
+                                <button onClick={handleRetablir} className="bg-teal-600 text-white px-4 py-2 rounded-lg font-bold hover:bg-teal-700">
+                                    Rétablir la séance
+                                </button>
                             </div>
+                        </div>
+                    )}
 
-                            {/* --- 2. SURNOMBRE (Invités non liés) --- */}
-                            {invites.filter(i => !replacementLinks[i.id]).length > 0 && (
-                                <div className="bg-purple-100 rounded-xl shadow-sm border border-purple-200 overflow-hidden">
-                                    <div className="px-4 py-2 border-b border-purple-200 flex justify-between items-center">
-                                        <h3 className="text-xs font-bold text-purple-900 uppercase tracking-wider">Surnombre (Hors Créneaux)</h3>
-                                    </div>
-                                    <div className="p-3 space-y-2">
-                                        {invites.filter(i => !replacementLinks[i.id]).map(eleve => (
-                                            <div key={eleve.id} className="flex items-center justify-between bg-white p-2 rounded-lg border border-purple-100 shadow-sm">
-                                                <div className="flex items-center gap-3">
-                                                    <span className="text-lg">➕</span>
+                    {!estAnnule && (
+                        <div className="flex justify-between items-center mb-6 px-2">
+                            <span className="text-xs font-bold uppercase text-gray-500 tracking-wider">Remplissage</span>
+                            <span className={`text-sm font-bold px-4 py-1.5 rounded-full shadow-sm border ${totalPresents > capacity ? 'bg-red-100 text-red-700 border-red-200' : 'bg-white text-teal-800 border-teal-100'}`}>
+                                {totalPresents} / {capacity} places
+                            </span>
+                        </div>
+                    )}
+
+                    {/* ... (Affichage des Grilles SlotsRender, etc. identique à avant) ... */}
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8">
+                        {slotsRender.map((slot, index) => {
+                            if (slot.type === 'titulaire') {
+                                const eleve = slot.student;
+                                const isPresent = statuses[eleve.id] === 'present';
+                                const replacementId = Object.keys(replacementLinks).find(k => replacementLinks[k] === eleve.id);
+                                const replacement = replacementId ? invites.find(i => i.id === replacementId) : null;
+
+                                return (
+                                    <div key={eleve.id} className={`relative p-4 rounded-xl border-l-4 shadow-sm bg-white transition-all ${isPresent ? 'border-teal-500' : 'border-red-300 bg-red-50/20'}`}>
+                                        <div className="flex justify-between items-start">
+                                            <div>
+                                                <div className="font-bold text-gray-800 text-lg">{eleve.prenom} {eleve.nom}</div>
+                                                <div className="text-[10px] uppercase font-bold text-gray-400 mb-2 tracking-wide">Titulaire</div>
+                                                <div className="flex gap-2">
+                                                    <button onClick={() => toggleStatus(eleve.id)} className={`text-xs px-3 py-1 rounded font-bold border transition ${isPresent ? 'bg-teal-50 text-teal-700 border-teal-200' : 'bg-white text-red-500 border-red-200 shadow-sm'}`}>
+                                                        {isPresent ? 'Présent' : 'Absent'}
+                                                    </button>
+                                                    <button onClick={() => desinscrireTitulaire(eleve)} className="text-gray-300 hover:text-red-500 ml-2 p-1" title="Désinscrire">🗑️</button>
+                                                </div>
+                                            </div>
+                                            {!isPresent && !replacement && (
+                                                <button onClick={() => preparerAjout('replace', eleve.id)} className="w-10 h-10 rounded-full bg-purple-100 text-purple-600 hover:bg-purple-200 flex items-center justify-center font-bold text-xl border border-purple-200" title="Remplacer">+</button>
+                                            )}
+                                        </div>
+                                        {replacement && (
+                                            <div className="mt-3 pt-3 border-t border-purple-100 flex justify-between items-center">
+                                                <div className="flex items-center gap-2 text-purple-700">
+                                                    <span className="text-xl">↳</span>
                                                     <div>
-                                                        <div className="font-bold text-gray-800 text-sm">{eleve.nom} {eleve.prenom}</div>
-                                                        <div className="text-xs text-purple-500">Ajout Surnombre</div>
+                                                        <span className="font-bold text-sm block">{replacement.prenom} {replacement.nom}</span>
+                                                        <span className="text-[9px] bg-purple-100 px-1.5 py-0.5 rounded uppercase font-bold">Remplaçant</span>
                                                     </div>
                                                 </div>
-                                                <button onClick={() => retirerInvite(eleve.id)} className="text-gray-400 hover:text-red-500 px-2">✕</button>
+                                                <button onClick={() => retirerInvite(replacement.id)} className="text-gray-400 hover:text-red-500 w-6 h-6 flex items-center justify-center">✕</button>
                                             </div>
-                                        ))}
+                                        )}
                                     </div>
-                                </div>
-                            )}
-
-                            {/* BOUTON AJOUT SURNOMBRE (Toujours visible si pas de cible) */}
-                            {!targetAbsentId && (
-                                <div className="bg-gray-200 p-3 rounded-xl border border-gray-300">
-                                    <div className="text-xs font-bold text-gray-600 mb-2 uppercase">Ajouter un élève en surnombre</div>
-                                    <div className="flex gap-2">
-                                        <select
-                                            className="flex-1 text-sm border-gray-300 rounded-lg"
-                                            value={selectedStudentId}
-                                            onChange={(e) => setSelectedStudentId(e.target.value)}
-                                        >
-                                            <option value="">+ Choisir un élève</option>
-                                            {allStudents
-                                                .filter(s => !inscrits.find(i => i.id === s.id) && !invites.find(i => i.id === s.id))
-                                                .map(s => (
-                                                    <option key={s.id} value={s.id}>{s.nom} {s.prenom}</option>
-                                                ))}
-                                        </select>
-                                        <button
-                                            onClick={validerAjoutInvite}
-                                            disabled={!selectedStudentId}
-                                            className="bg-gray-600 text-white px-4 py-2 rounded-lg text-sm font-bold hover:bg-gray-700 disabled:opacity-50"
-                                        >
-                                            Ajouter
-                                        </button>
-                                    </div>
-                                </div>
-                            )}
-
-                            {/* --- 3. GESTION FILE D'ATTENTE --- */}
-                            <div className="bg-orange-50 rounded-xl border border-orange-200 overflow-hidden mt-4">
-                                <div className="px-4 py-2 bg-orange-100 border-b border-orange-200 text-orange-800 font-bold text-xs uppercase flex justify-between">
-                                    <span>🕒 File d'attente ({waitingList.length})</span>
-                                </div>
-
-                                <div className="p-3 space-y-2">
-                                    {waitingList.length === 0 && <p className="text-xs text-orange-400 italic text-center">Personne en attente.</p>}
-
-                                    {waitingList.map(eleve => (
-                                        <div key={eleve.id} className="flex justify-between items-center bg-white p-2 rounded border border-orange-100">
-                                            <span className="text-sm text-gray-700 font-medium">{eleve.nom} {eleve.prenom}</span>
-                                            <div className="flex gap-2">
-                                                <button
-                                                    onClick={() => promouvoirDepuisWaiting(eleve)}
-                                                    className="text-[10px] bg-green-100 text-green-700 px-2 py-1 rounded font-bold hover:bg-green-200"
-                                                >
-                                                    PROMOUVOIR
-                                                </button>
-                                                <button
-                                                    onClick={() => supprimerDuWaitingList(eleve.id)}
-                                                    className="text-gray-400 hover:text-red-500 px-1"
-                                                >
-                                                    ✕
-                                                </button>
+                                );
+                            }
+                            if (slot.type === 'guest_in_slot') {
+                                const eleve = slot.student;
+                                return (
+                                    <div key={eleve.id} className="p-4 rounded-xl border-l-4 border-purple-500 bg-purple-50 shadow-sm flex justify-between items-center">
+                                        <div>
+                                            <div className="font-bold text-gray-800 text-lg">{eleve.prenom} {eleve.nom}</div>
+                                            <div className="text-[10px] uppercase font-bold text-purple-600 tracking-wide">
+                                                {isExceptionnel ? "Participant" : "Invité (Ponctuel)"}
                                             </div>
                                         </div>
-                                    ))}
-
-                                    {/* Ajout manuel dans la file d'attente */}
-                                    <div className="flex gap-2 mt-2 pt-2 border-t border-orange-100">
-                                        <select
-                                            className="flex-1 text-sm border-orange-200 rounded-lg bg-orange-50/50 focus:ring-orange-500"
-                                            value={selectedWaitlistId}
-                                            onChange={(e) => setSelectedWaitlistId(e.target.value)}
-                                        >
-                                            <option value="">+ Ajouter en file d'attente</option>
-                                            {allStudents
-                                                .filter(s => !inscrits.find(i => i.id === s.id) && !invites.find(i => i.id === s.id) && !waitingList.find(w => w.id === s.id))
-                                                .map(s => (
-                                                    <option key={s.id} value={s.id}>{s.nom} {s.prenom}</option>
-                                                ))}
-                                        </select>
-                                        <button
-                                            onClick={ajouterAuWaitingList}
-                                            disabled={!selectedWaitlistId}
-                                            className="bg-orange-400 text-white px-3 py-1 rounded-lg text-xs font-bold hover:bg-orange-500 disabled:opacity-50"
-                                        >
-                                            OK
+                                        <button onClick={() => retirerInvite(eleve.id)} className="w-8 h-8 flex items-center justify-center text-gray-400 hover:text-red-500 rounded-full hover:bg-white transition">✕</button>
+                                    </div>
+                                );
+                            }
+                            return (
+                                <div key={`empty-${index}`} className="relative p-4 rounded-xl border-2 border-dashed border-gray-300 bg-gray-50 flex flex-col justify-center items-center min-h-[110px] group hover:border-teal-400 hover:bg-white transition-all">
+                                    <div className="text-gray-400 text-xs font-bold uppercase mb-3 tracking-widest group-hover:text-teal-600">Place Libre</div>
+                                    <div className="flex gap-3 relative">
+                                        {!isExceptionnel && (
+                                            <button onClick={() => preparerAjout('permanent')} className="px-4 py-1.5 bg-white border border-gray-300 rounded-lg text-xs font-bold text-gray-600 hover:text-teal-700 hover:border-teal-500 shadow-sm transition">
+                                                👤 Titulaire
+                                            </button>
+                                        )}
+                                        <button onClick={() => preparerAjout('guest')} className={`px-4 py-1.5 bg-white border border-gray-300 rounded-lg text-xs font-bold text-gray-600 hover:text-purple-700 hover:border-purple-500 shadow-sm transition ${isExceptionnel ? 'w-full' : ''}`}>
+                                            {isExceptionnel ? "➕ Ajouter un participant" : "🎟️ Invité"}
                                         </button>
                                     </div>
                                 </div>
+                            );
+                        })}
+                    </div>
+
+                    {overflowGuests.length > 0 && (
+                        <div className="mt-8 border-t pt-6 border-gray-200">
+                            <h3 className="text-xs font-bold text-red-600 uppercase mb-3 flex items-center gap-2">
+                                ⚠️ Surnombre (Hors Capacité) / Orphelins
+                                <span className="bg-red-100 text-red-800 px-2 py-0.5 rounded-full text-[10px]">{overflowGuests.length}</span>
+                            </h3>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                {overflowGuests.map(eleve => (
+                                    <div key={eleve.id} className="p-3 rounded-lg border border-red-200 bg-red-50 flex justify-between items-center shadow-sm">
+                                        <div className="flex items-center gap-3">
+                                            <span className="text-red-500 font-bold text-xl">+</span>
+                                            <span className="text-sm font-bold text-gray-800">{eleve.prenom} {eleve.nom}</span>
+                                        </div>
+                                        <button onClick={() => retirerInvite(eleve.id)} className="text-red-400 hover:text-red-700 font-bold px-2 py-1 hover:bg-red-100 rounded transition">✕</button>
+                                    </div>
+                                ))}
                             </div>
-                        </>
+                        </div>
                     )}
+
+                    <div className="mt-8 bg-orange-50 rounded-xl border border-orange-200 p-5 shadow-sm">
+                        <div className="flex justify-between items-center mb-4">
+                            <h3 className="text-xs font-bold text-orange-800 uppercase flex items-center gap-2 tracking-wide">
+                                🕒 File d'attente ({waitingList.length})
+                            </h3>
+                            <div className="flex gap-2">
+                                <select className="text-xs border-orange-200 rounded-lg bg-white py-2 pl-2 pr-8 outline-none" value={selectedWaitlistId} onChange={e => setSelectedWaitlistId(e.target.value)}>
+                                    <option value="">+ Ajouter en attente</option>
+                                    {allStudents
+                                        .filter(s => !inscrits.find(i => i.id === s.id) && !invites.find(i => i.id === s.id) && !waitingList.find(w => w.id === s.id))
+                                        .map(s => <option key={s.id} value={s.id}>{s.prenom} {s.nom}</option>)
+                                    }
+                                </select>
+                                <button onClick={ajouterAuWaitingList} disabled={!selectedWaitlistId} className="bg-orange-400 text-white px-3 rounded-lg font-bold text-lg hover:bg-orange-500 shadow-sm">+</button>
+                            </div>
+                        </div>
+                        <div className="space-y-2">
+                            {waitingList.map(eleve => (
+                                <div key={eleve.id} className="bg-white p-3 rounded-lg border border-orange-100 flex justify-between items-center shadow-sm">
+                                    <span className="text-sm text-gray-800 font-medium">{eleve.prenom} {eleve.nom}</span>
+                                    <div className="flex gap-2">
+                                        <button onClick={() => promouvoirWaiting(eleve)} className="text-[10px] bg-teal-100 text-teal-800 px-3 py-1.5 rounded font-bold hover:bg-teal-200 border border-teal-200 transition">PROMOUVOIR</button>
+                                        <button onClick={() => supprimerDuWaitingList(eleve.id)} className="text-gray-400 hover:text-red-500 w-8 flex items-center justify-center hover:bg-red-50 rounded">✕</button>
+                                    </div>
+                                </div>
+                            ))}
+                            {waitingList.length === 0 && <p className="text-xs text-orange-300 italic text-center py-2">La file d'attente est vide.</p>}
+                        </div>
+                    </div>
                 </div>
 
-                {/* FOOTER ACTIONS */}
-                <div className="p-4 bg-white border-t flex justify-between items-center z-10">
-                    <div className="flex items-center gap-2">
-                        {!estAnnule && groupe.type === 'ajout' && (
-                            <button onClick={() => onEdit(groupe)} className="text-blue-600 font-bold text-sm underline px-2">✏️ Modifier</button>
-                        )}
-                        {!estAnnule && (
-                            <button onClick={handleCancelOrDelete} className="text-red-400 hover:text-red-600 font-bold text-xs underline px-2">
-                                {groupe.type === 'ajout' ? 'Supprimer' : 'Annuler ce cours'}
-                            </button>
-                        )}
-                        {estAnnule && <button onClick={retablirLeCours} className="text-teal-600 font-bold text-sm underline px-2">↩ Rétablir</button>}
-                    </div>
-                    <div className="flex gap-3">
-                        <button onClick={onClose} className="px-4 py-2 text-sm font-bold text-gray-500 hover:text-gray-700">Fermer</button>
-                        {!estAnnule && (
-                            <button onClick={sauvegarder} className="bg-teal-700 text-white px-6 py-2 rounded-lg font-bold hover:bg-teal-800 shadow-md">
-                                Enregistrer
-                            </button>
-                        )}
+                {/* FOOTER AVEC BOUTON SUPPRIMER DÉFINITIF */}
+                <div className="p-5 bg-white border-t flex justify-between items-center gap-4 z-40">
+
+                    {/* BOUTON SUPPRIMER TOTAL (Danger Zone) */}
+                    <button
+                        onClick={handleSupprimerDefinitif}
+                        className="text-gray-300 hover:text-red-600 p-2 text-sm font-bold transition flex items-center gap-1"
+                        title="Supprimer définitivement ce créneau"
+                    >
+                        🗑️ Supprimer tout
+                    </button>
+
+                    <div className="flex gap-4">
+                        <button onClick={onClose} className="px-5 py-2.5 text-gray-500 font-bold hover:bg-gray-100 rounded-lg transition">Fermer</button>
+                        {!estAnnule && <button onClick={sauvegarder} className="bg-teal-700 text-white px-8 py-2.5 rounded-lg font-bold hover:bg-teal-800 shadow-lg transform active:scale-95 transition">Enregistrer</button>}
                     </div>
                 </div>
-
             </div>
         </div>
     );

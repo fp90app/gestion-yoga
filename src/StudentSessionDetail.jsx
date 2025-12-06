@@ -8,7 +8,7 @@ export default function StudentSessionDetail({ session, student, onClose, onUpda
     const [processing, setProcessing] = useState(false);
 
     // Données statiques
-    const { groupe, dateObj, seanceId, dateStr } = session;
+    const { groupe, dateObj, seanceId, dateStr, isExceptionnel } = session;
     const allEleves = session.donneesGlobales.allEleves;
 
     useEffect(() => {
@@ -32,16 +32,18 @@ export default function StudentSessionDetail({ session, student, onClose, onUpda
 
     // --- LOGIQUE D'ÉTAT ---
     const myId = student.id;
-    const myStatus = attendanceData.status?.[myId]; // 'present', 'absent', undefined
+    const myStatus = attendanceData.status?.[myId];
 
-    // Suis-je titulaire de CE groupe ?
-    const isTitulaire = student.enrolledGroupIds && student.enrolledGroupIds.includes(groupe.id);
+    // Suis-je titulaire de CE groupe ? (Seulement si NON exceptionnel)
+    const isTitulaire = !isExceptionnel && student.enrolledGroupIds && student.enrolledGroupIds.includes(groupe.id);
     const isInWaitingList = attendanceData.waitingList?.includes(myId);
 
-    // Identification des listes
-    const inscrits = allEleves.filter(e => e.enrolledGroupIds && e.enrolledGroupIds.includes(groupe.id));
+    // 1. LES TITULAIRES (Seulement pour Standard)
+    const inscrits = !isExceptionnel
+        ? allEleves.filter(e => e.enrolledGroupIds && e.enrolledGroupIds.includes(groupe.id))
+        : [];
 
-    // Invités (ceux dans status 'present' mais pas titulaires)
+    // 2. LES INVITÉS
     const guestIds = Object.keys(attendanceData.status || {}).filter(uid => {
         const s = attendanceData.status[uid];
         const isTit = inscrits.some(t => t.id === uid);
@@ -49,7 +51,7 @@ export default function StudentSessionDetail({ session, student, onClose, onUpda
     });
     const invites = guestIds.map(uid => allEleves.find(e => e.id === uid)).filter(Boolean);
 
-    // Calcul Places
+    // --- CALCUL DES PLACES ---
     const titulairesAbsents = inscrits.filter(t =>
         attendanceData.status?.[t.id] === 'absent' ||
         attendanceData.status?.[t.id] === 'absent_announced'
@@ -58,11 +60,32 @@ export default function StudentSessionDetail({ session, student, onClose, onUpda
     const occupiedByTitulaires = inscrits.length - titulairesAbsents.length;
     const totalPresents = occupiedByTitulaires + invites.length;
 
-    // Places réellement libres (Capacité - Présents)
-    const placesRestantes = groupe.places - totalPresents;
+    const hasWaitingList = attendanceData.waitingList && attendanceData.waitingList.length > 0;
+
+    const placesRestantes = hasWaitingList ? 0 : (groupe.places - totalPresents);
     const isFull = placesRestantes <= 0;
 
-    // --- HELPER MESSAGES CRÉDITS ---
+    // --- AFFICHAGE GRID ---
+    const mainList = isExceptionnel ? invites : inscrits;
+    const slotsOccupiedCount = mainList.length;
+
+    // CORRECTION VISUELLE ICI : 
+    // On force le nombre de slots vides à 0 si c'est complet ou s'il y a de l'attente
+    const emptySlotsCount = (isFull || hasWaitingList) ? 0 : Math.max(0, groupe.places - slotsOccupiedCount);
+
+    let secondaryList = [];
+    if (isExceptionnel) {
+        secondaryList = invites.slice(groupe.places);
+    } else {
+        // CORRECTION ICI : On récupère les Clés (Guest IDs) et non les Valeurs (Titulaire IDs)
+        // replacementLinks est sous la forme { GUEST_ID : TITULAIRE_ID }
+        const guestWhoAreReplacements = Object.keys(attendanceData.replacementLinks || {});
+
+        // On filtre : on garde ceux qui ne sont PAS dans la liste des clés de remplacement
+        secondaryList = invites.filter(i => !guestWhoAreReplacements.includes(i.id));
+    }
+
+    // --- ACTIONS CRÉDITS ---
     const confirmCreditAction = (actionType) => {
         const solde = student.absARemplacer || 0;
         let cout = 0;
@@ -86,12 +109,13 @@ export default function StudentSessionDetail({ session, student, onClose, onUpda
         return confirm(message);
     };
 
-    // --- ACTIONS ÉLÈVES ---
-
-    // 1. GESTION ABSENCE (Titulaire)
+    // --- ACTIONS DB ---
     const toggleMyPresence = async () => {
         const isAbsentNow = myStatus === 'absent' || myStatus === 'absent_announced';
-
+        if (isAbsentNow && isFull) {
+            alert("❌ Impossible de reprendre votre place : le cours est complet.");
+            return;
+        }
         if (!confirmCreditAction(isAbsentNow ? 'cancel_absence' : 'signal_absence')) return;
 
         setProcessing(true);
@@ -100,13 +124,14 @@ export default function StudentSessionDetail({ session, student, onClose, onUpda
         const userRef = doc(db, "eleves", myId);
 
         if (isAbsentNow) {
-            // JE REVIENS
             batch.set(ref, { status: { [myId]: deleteField() } }, { merge: true });
             batch.update(userRef, { absARemplacer: increment(-1) });
         } else {
-            // JE M'ABSENTE
             batch.set(ref, {
-                date: dateStr, groupeId: groupe.id, nomGroupe: groupe.nom, realDate: Timestamp.fromDate(dateObj),
+                date: dateStr,
+                groupeId: groupe.id,
+                nomGroupe: groupe.nom,
+                realDate: Timestamp.fromDate(dateObj),
                 status: { [myId]: 'absent_announced' },
                 updatedAt: serverTimestamp()
             }, { merge: true });
@@ -119,7 +144,6 @@ export default function StudentSessionDetail({ session, student, onClose, onUpda
         setProcessing(false);
     };
 
-    // 2. RÉSERVATION (Invité)
     const bookSpot = async (targetId = null) => {
         if (!confirmCreditAction('book')) return;
 
@@ -129,7 +153,10 @@ export default function StudentSessionDetail({ session, student, onClose, onUpda
         const userRef = doc(db, "eleves", myId);
 
         const updateData = {
-            date: dateStr, groupeId: groupe.id, nomGroupe: groupe.nom, realDate: Timestamp.fromDate(dateObj),
+            date: dateStr,
+            groupeId: groupe.id,
+            nomGroupe: groupe.nom,
+            realDate: Timestamp.fromDate(dateObj),
             status: { [myId]: 'present' },
             updatedAt: serverTimestamp()
         };
@@ -151,7 +178,6 @@ export default function StudentSessionDetail({ session, student, onClose, onUpda
         setProcessing(false);
     };
 
-    // 3. ANNULATION RÉSERVATION (Invité)
     const cancelBooking = async () => {
         if (!confirmCreditAction('cancel_booking')) return;
         setProcessing(true);
@@ -174,31 +200,28 @@ export default function StudentSessionDetail({ session, student, onClose, onUpda
         setProcessing(false);
     };
 
-    // 4. LISTE D'ATTENTE
     const toggleWaitlist = async () => {
         setProcessing(true);
         const ref = doc(db, "attendance", seanceId);
+        const batch = writeBatch(db);
 
         if (isInWaitingList) {
             if (confirm("Quitter la file d'attente ?")) {
-                await batchUpdate(ref, { waitingList: arrayRemove(myId) });
-            }
+                batch.update(ref, { waitingList: arrayRemove(myId) });
+            } else { setProcessing(false); return; }
         } else {
-            await batchUpdate(ref, {
-                date: dateStr, groupeId: groupe.id, nomGroupe: groupe.nom, realDate: Timestamp.fromDate(dateObj),
+            batch.set(ref, {
+                date: dateStr,
+                groupeId: groupe.id,
+                nomGroupe: groupe.nom,
+                realDate: Timestamp.fromDate(dateObj),
                 waitingList: arrayUnion(myId)
-            }, true);
+            }, { merge: true });
         }
+        await batch.commit();
         await fetchLiveAttendance();
         onUpdate();
         setProcessing(false);
-    };
-
-    const batchUpdate = async (ref, data, isSet = false) => {
-        const batch = writeBatch(db);
-        if (isSet) batch.set(ref, data, { merge: true });
-        else batch.update(ref, data);
-        await batch.commit();
     };
 
     if (loading) return <div className="p-10 text-center">Chargement...</div>;
@@ -208,14 +231,22 @@ export default function StudentSessionDetail({ session, student, onClose, onUpda
             <div className="bg-white w-full max-w-lg rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[85vh]" onClick={e => e.stopPropagation()}>
 
                 {/* Header */}
-                <div className="bg-teal-900 p-6 text-white flex justify-between items-start">
+                <div className={`p-6 text-white flex justify-between items-start ${isExceptionnel ? 'bg-purple-800' : 'bg-teal-900'}`}>
                     <div>
-                        <h3 className="text-2xl font-playfair font-bold">{groupe.nom}</h3>
-                        <p className="text-teal-100 text-sm mt-1 capitalize">
+                        <div className="flex items-center gap-2">
+                            <h3 className="text-2xl font-playfair font-bold">{groupe.nom}</h3>
+                            {isExceptionnel && <span className="text-[10px] bg-white/20 px-2 rounded uppercase font-bold border border-white/20">Unique</span>}
+                        </div>
+                        <p className="text-white/80 text-sm mt-1 capitalize">
                             {dateObj.toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' })} • {groupe.heureDebut}
                         </p>
+                        {groupe.theme && (
+                            <div className="mt-3 bg-white/10 p-2.5 rounded-lg border border-white/20 text-sm italic text-yellow-50 shadow-sm">
+                                <span className="mr-1">ℹ️</span> {groupe.theme}
+                            </div>
+                        )}
                     </div>
-                    <button onClick={onClose} className="bg-white/20 hover:bg-white/40 text-white rounded-full w-10 h-10 flex items-center justify-center font-bold text-xl">✕</button>
+                    <button onClick={onClose} className="bg-white/20 hover:bg-white/40 text-white rounded-full w-10 h-10 flex items-center justify-center font-bold text-xl transition">✕</button>
                 </div>
 
                 {/* Jauge */}
@@ -227,24 +258,25 @@ export default function StudentSessionDetail({ session, student, onClose, onUpda
                         </span>
                     </div>
                     <div className="w-full bg-gray-200 rounded-full h-2">
-                        <div className={`h-2 rounded-full ${isFull ? 'bg-red-500' : 'bg-teal-500'}`} style={{ width: `${Math.min((totalPresents / groupe.places) * 100, 100)}%` }}></div>
+                        <div className={`h-2 rounded-full transition-all duration-500 ${isFull ? 'bg-red-500' : 'bg-teal-500'}`} style={{ width: `${Math.min((totalPresents / groupe.places) * 100, 100)}%` }}></div>
                     </div>
                 </div>
 
                 {/* Body */}
                 <div className="flex-1 overflow-y-auto p-4 bg-gray-100 space-y-4">
 
-                    {/* LISTE TITULAIRES + PLACES PERMANENTES VIDES */}
+                    {/* LISTE PRINCIPALE */}
                     <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
                         <div className="bg-teal-50 px-4 py-2 border-b border-teal-100 text-xs font-bold text-teal-800 uppercase tracking-wider">
-                            Groupe Régulier
+                            {isExceptionnel ? "Participants Inscrits" : "Groupe Régulier"}
                         </div>
                         <div className="divide-y divide-gray-50">
-                            {/* 1. LES TITULAIRES RÉELS */}
-                            {inscrits.map(eleve => {
+                            {/* BOUCLE LISTE PRINCIPALE */}
+                            {mainList.map(eleve => {
                                 const status = attendanceData.status?.[eleve.id];
-                                const isAbsent = status === 'absent' || status === 'absent_announced';
+                                const isAbsent = !isExceptionnel && (status === 'absent' || status === 'absent_announced');
                                 const isMe = eleve.id === myId;
+
                                 const replacementId = Object.keys(attendanceData.replacementLinks || {}).find(k => attendanceData.replacementLinks[k] === eleve.id);
                                 const replacement = replacementId ? invites.find(i => i.id === replacementId) : null;
 
@@ -261,13 +293,27 @@ export default function StudentSessionDetail({ session, student, onClose, onUpda
                                                 </div>
                                             </div>
 
-                                            {isMe && !processing && (
-                                                <button onClick={toggleMyPresence} className={`text-xs font-bold px-3 py-1.5 rounded border ${isAbsent ? 'bg-teal-50 text-teal-700 border-teal-200' : 'bg-white text-red-500 border-red-100'}`}>
-                                                    {isAbsent ? "Je viens" : "S'absenter"}
+                                            {/* ACTIONS */}
+                                            {isTitulaire && isMe && !processing && (
+                                                <button
+                                                    onClick={toggleMyPresence}
+                                                    disabled={isAbsent && isFull}
+                                                    className={`text-xs font-bold px-3 py-1.5 rounded border transition ${isAbsent
+                                                        ? (isFull ? 'bg-gray-100 text-gray-400 cursor-not-allowed' : 'bg-teal-50 text-teal-700 border-teal-200')
+                                                        : 'bg-white text-red-500 border-red-100'
+                                                        }`}
+                                                >
+                                                    {isAbsent ? (isFull ? "Complet" : "Je viens") : "S'absenter"}
                                                 </button>
                                             )}
 
-                                            {!isTitulaire && !isMe && isAbsent && !replacement && !myStatus && !processing && (
+                                            {isExceptionnel && isMe && !processing && (
+                                                <button onClick={cancelBooking} className="text-[10px] bg-red-50 text-red-500 border border-red-100 px-2 py-1 rounded hover:bg-red-100">
+                                                    Annuler
+                                                </button>
+                                            )}
+
+                                            {!isExceptionnel && !isTitulaire && !isMe && isAbsent && !replacement && !myStatus && !processing && (
                                                 <button onClick={() => bookSpot(eleve.id)} className="text-[10px] bg-purple-600 text-white px-3 py-1.5 rounded font-bold hover:bg-purple-700 animate-pulse shadow-sm">
                                                     Prendre cette place
                                                 </button>
@@ -286,9 +332,8 @@ export default function StudentSessionDetail({ session, student, onClose, onUpda
                                 );
                             })}
 
-                            {/* 2. LES PLACES PERMANENTES VIDES (GHOST SLOTS) */}
-                            {/* Si le groupe a 6 places mais que 5 inscrits, on affiche 1 place vide */}
-                            {Array.from({ length: Math.max(0, groupe.places - inscrits.length) }).map((_, idx) => (
+                            {/* CASES VIDES */}
+                            {Array.from({ length: emptySlotsCount }).map((_, idx) => (
                                 <div key={`empty-${idx}`} className="p-3 flex items-center justify-between bg-gray-50 border-dashed border-gray-200">
                                     <div className="flex items-center gap-3 opacity-60">
                                         <div className="w-2.5 h-2.5 rounded-full border-2 border-gray-300 border-dashed"></div>
@@ -310,17 +355,17 @@ export default function StudentSessionDetail({ session, student, onClose, onUpda
                         </div>
                     </div>
 
-                    {/* SURNOMBRE / INVITÉS SUPPLÉMENTAIRES */}
-                    {invites.filter(i => !Object.keys(attendanceData.replacementLinks || {}).includes(i.id)).length > 0 && (
+                    {/* LISTE SECONDAIRE */}
+                    {secondaryList.length > 0 && (
                         <div className="bg-purple-50 rounded-xl shadow-sm border border-purple-100 overflow-hidden">
                             <div className="px-4 py-2 border-b border-purple-100 text-xs font-bold text-purple-800 uppercase tracking-wider">
-                                Autres Participants
+                                {isExceptionnel ? "Surnombre (Hors Capacité)" : "Autres Participants"}
                             </div>
                             <div className="p-3 space-y-2">
-                                {invites.filter(i => !Object.keys(attendanceData.replacementLinks || {}).includes(i.id)).map(eleve => (
+                                {secondaryList.map(eleve => (
                                     <div key={eleve.id} className="flex justify-between items-center text-sm">
                                         <div className="flex items-center gap-2">
-                                            <span>➕</span>
+                                            <span>✅</span>
                                             <span className="font-medium text-gray-700">{eleve.prenom} {eleve.nom.charAt(0)}.</span>
                                             {eleve.id === myId && <span className="text-[9px] bg-purple-200 text-purple-800 px-1 rounded font-bold ml-2">(Moi)</span>}
                                         </div>
@@ -353,12 +398,13 @@ export default function StudentSessionDetail({ session, student, onClose, onUpda
 
                 </div>
 
-                {/* FOOTER ACTIONS (GLOBAL) */}
+                {/* FOOTER */}
                 <div className="p-4 bg-white border-t">
                     {isTitulaire ? (
-                        <p className="text-center text-xs text-gray-400">Vous êtes titulaire de ce créneau.</p>
+                        <p className="text-center text-xs text-gray-400">
+                            {myStatus === 'absent_announced' ? "Vous avez signalé votre absence." : "Vous êtes titulaire de ce créneau."}
+                        </p>
                     ) : (
-                        // LOGIQUE INVITÉ
                         myStatus === 'present' ? (
                             <button onClick={cancelBooking} className="w-full py-3 bg-red-50 text-red-600 font-bold rounded-xl border border-red-200 hover:bg-red-100">
                                 Annuler ma réservation (+1 crédit)

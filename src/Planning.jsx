@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { db } from './firebase';
-import { collection, getDocs, query, where, doc, updateDoc } from 'firebase/firestore';
+import { collection, getDocs, query, where } from 'firebase/firestore';
 import GestionSeance from './GestionSeance';
 import AjoutSeance from './AjoutSeance';
 import GestionGroupes from './GestionGroupes';
@@ -9,9 +9,9 @@ const JOURS = ["Dimanche", "Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "S
 const MOIS = ["Jan", "Fév", "Mar", "Avr", "Mai", "Juin", "Juil", "Août", "Sep", "Oct", "Nov", "Déc"];
 
 // --- CONFIGURATION CALENDRIER ---
-const HEURE_DEBUT = 8; // Le planning commence à 8h00
-const HEURE_FIN = 21;  // Le planning finit à 21h00
-const PIXELS_PAR_HEURE = 80; // Hauteur d'une heure (plus grand = plus aéré)
+const HEURE_DEBUT = 8;
+const HEURE_FIN = 21;
+const PIXELS_PAR_HEURE = 80;
 
 const getLundi = (d) => {
     const date = new Date(d);
@@ -31,17 +31,22 @@ const ajouterJours = (date, jours) => {
 
 const formaterDateSimple = (date) => `${date.getDate()} ${MOIS[date.getMonth()]}`;
 
+
 export default function Planning() {
     const [coursAffiches, setCoursAffiches] = useState([]);
     const [donneesBrutes, setDonneesBrutes] = useState({ groupes: [], eleves: [], exceptions: [], attendances: [] });
     const [loading, setLoading] = useState(true);
     const [lundiActuel, setLundiActuel] = useState(getLundi(new Date()));
+    const [groupeAEditerId, setGroupeAEditerId] = useState(null);
 
-    // Modales
+    // --- MODALES ---
     const [seanceSelectionnee, setSeanceSelectionnee] = useState(null);
     const [showAjoutModal, setShowAjoutModal] = useState(false);
     const [showGestionGroupes, setShowGestionGroupes] = useState(false);
     const [exceptionAEditer, setExceptionAEditer] = useState(null);
+
+    // Menu choix création
+    const [choixCreation, setChoixCreation] = useState(null);
 
     useEffect(() => { fetchDonnees(); }, [lundiActuel]);
 
@@ -72,8 +77,13 @@ export default function Planning() {
         const { groupes, eleves, exceptions, attendances } = donneesBrutes;
         let listeFinale = [];
 
-        const getStatsSeance = (groupeId, dateStr, inscritsBase) => {
-            const seanceId = `${dateStr}_${groupeId}`;
+        // Fonction Helper pour récupérer les stats (Présents / Attente)
+        // Correction : Ajout du paramètre isException pour gérer les IDs correctement
+        const getStatsSeance = (groupeId, dateStr, isException, inscritsBase) => {
+            // Si c'est une exception, l'ID dans attendance EST l'ID du document exception (groupeId)
+            // Si c'est standard, l'ID est "YYYY-MM-DD_groupeId"
+            const seanceId = isException ? groupeId : `${dateStr}_${groupeId}`;
+
             const attendanceDoc = attendances.find(a => a.id === seanceId);
             let nbAbsents = 0, nbInvites = 0, waitingCount = 0;
 
@@ -84,7 +94,8 @@ export default function Planning() {
                     const eleve = eleves.find(e => e.id === uid);
                     if (!eleve) return;
 
-                    const estInscrit = eleve.enrolledGroupIds && eleve.enrolledGroupIds.includes(groupeId);
+                    // Est-il inscrit officiellement ? (Toujours faux pour une exception)
+                    const estInscrit = !isException && eleve.enrolledGroupIds && eleve.enrolledGroupIds.includes(groupeId);
 
                     if (estInscrit && (st === 'absent' || st === 'absent_announced')) {
                         nbAbsents++;
@@ -97,34 +108,24 @@ export default function Planning() {
             return { reel: inscritsBase - nbAbsents + nbInvites, waitingCount };
         };
 
-        // 1. Récurrents
+        // 1. Récurrents (Standard)
         groupes.forEach(groupe => {
             const dateDuCours = ajouterJours(lundiActuel, groupe.jour - 1);
 
-            // =========================================================
-            //  NOUVEAU : FILTRE TEMPOREL (SAISONNALITÉ)
-            // =========================================================
-            // On vérifie si ce cours est actif pour la date affichée
             if (groupe.dateDebut && groupe.dateFin) {
-                // Gestion robuste : conversion Timestamp -> Date ou new Date() direct
                 const debut = groupe.dateDebut.toDate ? groupe.dateDebut.toDate() : new Date(groupe.dateDebut);
                 const fin = groupe.dateFin.toDate ? groupe.dateFin.toDate() : new Date(groupe.dateFin);
-
-                // On normalise à minuit pour comparer juste les jours
                 debut.setHours(0, 0, 0, 0);
-                fin.setHours(23, 59, 59, 999); // Fin inclusif
-
-                // Si la date du calendrier est HORS de la période du groupe, on ne l'affiche pas
-                if (dateDuCours < debut || dateDuCours > fin) {
-                    return; // On passe au groupe suivant
-                }
+                fin.setHours(23, 59, 59, 999);
+                if (dateDuCours < debut || dateDuCours > fin) return;
             }
-            // =========================================================
 
             const dateStr = dateDuCours.toLocaleDateString('fr-CA');
             const estAnnule = exceptions.some(ex => ex.groupeId === groupe.id && ex.date === dateStr && ex.type === "annulation");
             const inscritsCount = eleves.filter(e => e.enrolledGroupIds && e.enrolledGroupIds.includes(groupe.id)).length;
-            const stats = getStatsSeance(groupe.id, dateStr, inscritsCount);
+
+            // Appel stats pour standard (isException = false)
+            const stats = getStatsSeance(groupe.id, dateStr, false, inscritsCount);
 
             listeFinale.push({
                 ...groupe,
@@ -137,7 +138,7 @@ export default function Planning() {
             });
         });
 
-        // 2. Ajouts
+        // 2. Ajouts (Séances exceptionnelles) - CORRECTION MAJEURE ICI
         const dimancheFinStr = ajouterJours(lundiActuel, 6).toLocaleDateString('fr-CA');
         const lundiDebutStr = lundiActuel.toLocaleDateString('fr-CA');
         const ajoutsSemaine = exceptions.filter(ex => ex.type === "ajout" && ex.date >= lundiDebutStr && ex.date <= dimancheFinStr);
@@ -145,11 +146,20 @@ export default function Planning() {
         ajoutsSemaine.forEach(ajout => {
             const [y, m, d] = ajout.date.split('-').map(Number);
             const dateReelle = new Date(y, m - 1, d);
-            const stats = getStatsSeance(ajout.groupeId || 'ajout', ajout.date, 0);
+
+            // Appel stats pour exception (isException = true). On passe ajout.id comme identifiant.
+            const stats = getStatsSeance(ajout.id, ajout.date, true, 0);
+
             listeFinale.push({
-                id: ajout.id, ...ajout.newSessionData,
-                dateReelle, type: 'ajout', estAnnule: false,
-                inscritsCount: 0, presentCount: stats.reel, waitingCount: stats.waitingCount, originalExceptionId: ajout.id
+                id: ajout.id, // L'ID du "groupe" devient l'ID du document exception
+                ...ajout.newSessionData, // Spread (nom, theme, places, etc.)
+                dateReelle,
+                type: 'ajout',
+                estAnnule: false,
+                inscritsCount: 0,
+                presentCount: stats.reel,
+                waitingCount: stats.waitingCount,
+                originalExceptionId: ajout.id
             });
         });
 
@@ -161,7 +171,25 @@ export default function Planning() {
 
     const changerSemaine = (offset) => setLundiActuel(prev => ajouterJours(prev, offset * 7));
 
-    // --- LOGIQUE DE POSITIONNEMENT (CALENDRIER) ---
+    // --- GESTION DU CLIC SUR LA GRILLE ---
+    const handleCellClick = (dateJour, heureInt) => {
+        const heureStr = `${heureInt.toString().padStart(2, '0')}:00`;
+        setChoixCreation({ date: dateJour, heure: heureStr });
+    };
+
+    const handleChoix = (type) => {
+        if (type === 'hebdo') {
+            setShowGestionGroupes(true);
+        } else if (type === 'unique') {
+            setExceptionAEditer({
+                date: choixCreation.date.toLocaleDateString('fr-CA'),
+                heureDebut: choixCreation.heure
+            });
+            setShowAjoutModal(true);
+        }
+        setChoixCreation(null);
+    };
+
     const getCardStyle = (heureDebut, duree) => {
         const [h, m] = heureDebut.split(':').map(Number);
         const minutesDepuisDebut = (h - HEURE_DEBUT) * 60 + m;
@@ -169,9 +197,6 @@ export default function Planning() {
         const height = (duree / 60) * PIXELS_PAR_HEURE;
         return { top: `${top}px`, height: `${height}px` };
     };
-
-    if (loading) return <div className="flex justify-center items-center h-64 text-teal-600 font-bold">Chargement...</div>;
-    const dimancheFinSemaine = ajouterJours(lundiActuel, 6);
 
     const calculerHeureFin = (heureDebut, dureeMinutes) => {
         const [h, m] = heureDebut.split(':').map(Number);
@@ -181,8 +206,41 @@ export default function Planning() {
         return date.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }).replace(':', 'h');
     };
 
+    if (loading) return <div className="flex justify-center items-center h-64 text-teal-600 font-bold">Chargement...</div>;
+    const dimancheFinSemaine = ajouterJours(lundiActuel, 6);
+
     return (
         <div className="max-w-7xl mx-auto p-2 md:p-6">
+
+            {/* --- MODALE DE CHOIX CRÉATION --- */}
+            {choixCreation && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={() => setChoixCreation(null)}>
+                    <div className="bg-white p-6 rounded-2xl shadow-2xl w-80 text-center space-y-6 animate-in fade-in zoom-in-95" onClick={e => e.stopPropagation()}>
+                        <div>
+                            <h3 className="font-bold text-xl text-gray-800 font-playfair mb-1">Ajouter un créneau</h3>
+                            <p className="text-sm text-gray-500 font-medium capitalize">
+                                {choixCreation.date.toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric' })} • {choixCreation.heure}
+                            </p>
+                        </div>
+                        <div className="flex flex-col gap-3">
+                            <button onClick={() => handleChoix('hebdo')} className="p-4 bg-teal-50 text-teal-800 border border-teal-200 rounded-xl font-bold hover:bg-teal-100 transition flex items-center gap-3 text-left">
+                                <span className="text-2xl">📅</span>
+                                <div className="leading-tight">
+                                    <span className="block text-sm">Cours Hebdomadaire</span>
+                                    <span className="text-[10px] text-teal-600/70 uppercase">Récurrent toute l'année</span>
+                                </div>
+                            </button>
+                            <button onClick={() => handleChoix('unique')} className="p-4 bg-purple-50 text-purple-800 border border-purple-200 rounded-xl font-bold hover:bg-purple-100 transition flex items-center gap-3 text-left">
+                                <span className="text-2xl">✨</span>
+                                <div className="leading-tight">
+                                    <span className="block text-sm">Séance Exceptionnelle</span>
+                                    <span className="text-[10px] text-purple-600/70 uppercase">Une seule fois (Atelier, etc.)</span>
+                                </div>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             {/* --- HEADER --- */}
             <div className="flex flex-col md:flex-row items-center justify-between mb-6 bg-white p-4 rounded-xl shadow-sm border border-gray-100 sticky top-0 z-20">
@@ -190,11 +248,6 @@ export default function Planning() {
                     <h2 className="text-xl md:text-2xl font-playfair font-bold text-gray-800 whitespace-nowrap">
                         {formaterDateSimple(lundiActuel)} - {formaterDateSimple(dimancheFinSemaine)}
                     </h2>
-
-                    <div className="flex gap-2">
-                        <button onClick={() => setShowGestionGroupes(true)} className="bg-white text-teal-700 border border-teal-200 p-2 rounded-lg hover:bg-teal-50" title="Gérer les cours">⚙️</button>
-                        <button onClick={() => setShowAjoutModal(true)} className="bg-purple-700 text-white p-2 rounded-lg hover:bg-purple-800" title="Ajouter Séance">➕</button>
-                    </div>
                 </div>
 
                 <div className="flex items-center bg-gray-100 rounded-lg p-1 mt-3 md:mt-0">
@@ -219,6 +272,9 @@ export default function Planning() {
                                 <h3 className={`font-bold text-lg ${groupe.estAnnule ? 'line-through text-gray-400' : 'text-gray-800'}`}>
                                     {groupe.nom}
                                 </h3>
+                                {/* Affichage Thème Mobile */}
+                                {groupe.theme && <div className="text-xs text-purple-600 italic mb-1">"{groupe.theme}"</div>}
+
                                 <div className="text-sm mt-1">
                                     {groupe.estAnnule ? (
                                         <span className="text-red-500 font-bold">ANNULÉ</span>
@@ -266,9 +322,15 @@ export default function Planning() {
                                     <div className="text-lg">{dateJour.getDate()}</div>
                                 </div>
 
-                                {/* Lignes repères */}
+                                {/* Lignes repères CLIQUABLES */}
                                 {Array.from({ length: HEURE_FIN - HEURE_DEBUT }).map((_, i) => (
-                                    <div key={i} className="absolute w-full border-b border-gray-100" style={{ top: i * PIXELS_PAR_HEURE, height: PIXELS_PAR_HEURE }}></div>
+                                    <div
+                                        key={i}
+                                        onClick={() => handleCellClick(dateJour, i + HEURE_DEBUT)}
+                                        className="absolute w-full border-b border-gray-100 cursor-cell hover:bg-gray-50 transition-colors z-0"
+                                        style={{ top: i * PIXELS_PAR_HEURE, height: PIXELS_PAR_HEURE }}
+                                        title="Cliquez pour ajouter un cours"
+                                    ></div>
                                 ))}
 
                                 {/* CARTES COURS */}
@@ -285,8 +347,8 @@ export default function Planning() {
                                     return (
                                         <div
                                             key={groupe.id}
-                                            onClick={() => setSeanceSelectionnee({ groupe: groupe, date: groupe.dateReelle })}
-                                            className={`absolute left-1 right-1 rounded-md p-2 border-l-4 cursor-pointer transition-all shadow-sm hover:shadow-md overflow-hidden flex flex-col justify-between ${containerClass}`}
+                                            onClick={(e) => { e.stopPropagation(); setSeanceSelectionnee({ groupe: groupe, date: groupe.dateReelle }); }}
+                                            className={`absolute left-1 right-1 rounded-md p-2 border-l-4 cursor-pointer transition-all shadow-sm hover:shadow-md overflow-hidden flex flex-col justify-between z-10 ${containerClass}`}
                                             style={stylePos}
                                             title={`${groupe.nom} (${groupe.heureDebut})`}
                                         >
@@ -297,6 +359,12 @@ export default function Planning() {
                                                 <div className="text-[10px] opacity-80 font-mono mt-0.5">
                                                     {groupe.heureDebut.replace(':', 'h')} - {calculerHeureFin(groupe.heureDebut, groupe.duree)}
                                                 </div>
+                                                {/* Petit badge thème si existe */}
+                                                {groupe.theme && !groupe.estAnnule && (
+                                                    <div className="text-[9px] italic mt-1 truncate opacity-90 border-t border-black/5 pt-0.5">
+                                                        "{groupe.theme}"
+                                                    </div>
+                                                )}
                                             </div>
 
                                             {!groupe.estAnnule && (
@@ -328,10 +396,24 @@ export default function Planning() {
                     groupe={seanceSelectionnee.groupe}
                     date={seanceSelectionnee.date}
                     onClose={() => { setSeanceSelectionnee(null); fetchDonnees(); }}
-                    onEdit={(groupe) => {
-                        setSeanceSelectionnee(null);
-                        setExceptionAEditer(groupe);
-                        setShowAjoutModal(true);
+                    onEdit={(groupeAEditer) => {
+                        setSeanceSelectionnee(null); // On ferme la vue détail
+
+                        if (groupeAEditer.type === 'ajout') {
+                            // CAS 1 : C'est une exception (AjoutSeance)
+                            setExceptionAEditer({
+                                id: groupeAEditer.id,
+                                type: 'ajout',
+                                originalExceptionId: groupeAEditer.originalExceptionId,
+                                date: groupeAEditer.dateReelle.toLocaleDateString('fr-CA'),
+                                ...groupeAEditer
+                            });
+                            setShowAjoutModal(true);
+                        } else {
+                            // CAS 2 : C'est un cours récurrent (GestionGroupes)
+                            setGroupeAEditerId(groupeAEditer.id); // On stocke l'ID
+                            setShowGestionGroupes(true); // On ouvre la gestion
+                        }
                     }}
                 />
             )}
@@ -345,7 +427,16 @@ export default function Planning() {
                     initialData={exceptionAEditer}
                 />
             )}
-            {showGestionGroupes && <GestionGroupes onClose={() => setShowGestionGroupes(false)} onUpdate={() => fetchDonnees()} />}
+            {showGestionGroupes && (
+                <GestionGroupes
+                    onClose={() => {
+                        setShowGestionGroupes(false);
+                        setGroupeAEditerId(null); // Important : reset l'ID à la fermeture
+                    }}
+                    onUpdate={() => fetchDonnees()}
+                    initialEditId={groupeAEditerId} // <-- ON PASSE L'ID ICI
+                />
+            )}
         </div>
     );
 }

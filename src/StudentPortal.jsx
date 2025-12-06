@@ -1,9 +1,8 @@
 import { useState, useEffect } from 'react';
 import { db } from './firebase';
 import { Link } from 'react-router-dom';
-import { collection, query, where, getDocs, doc, getDoc, writeBatch, increment, serverTimestamp, Timestamp, arrayUnion, deleteField, setDoc } from 'firebase/firestore';
+import { collection, query, where, getDocs, doc, getDoc } from 'firebase/firestore';
 import StudentSessionDetail from './StudentSessionDetail';
-
 
 const JOURS = ["Dimanche", "Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi"];
 
@@ -29,14 +28,6 @@ const ajouterJours = (date, jours) => {
     return result;
 };
 
-const calculerHeureFin = (heureDebut, dureeMinutes) => {
-    const [h, m] = heureDebut.split(':').map(Number);
-    const date = new Date();
-    date.setHours(h, m, 0, 0);
-    date.setMinutes(date.getMinutes() + dureeMinutes);
-    return date.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }).replace(':', 'h');
-};
-
 const getPlacesLabel = (count) => {
     if (count <= 0) return "Complet";
     if (count === 1) return "1 place";
@@ -52,7 +43,6 @@ export default function StudentPortal() {
     const [sessionsSemaine, setSessionsSemaine] = useState([]);
     const [donneesGlobales, setDonneesGlobales] = useState(null);
 
-    // --- NOUVEAU : State pour la modale de détail ---
     const [selectedSession, setSelectedSession] = useState(null);
 
     // --- LOGIN ---
@@ -91,7 +81,7 @@ export default function StudentPortal() {
         return { top: `${top}px`, height: `${height}px` };
     };
 
-    // --- CHARGEMENT ---
+    // --- CHARGEMENT PLANNING ---
     useEffect(() => {
         if (student && donneesGlobales) {
             calculerPlanningSemaine();
@@ -113,6 +103,8 @@ export default function StudentPortal() {
         const attendances = attendanceSnap.docs.map(d => ({ id: d.id, ...d.data() }));
         const exceptions = exceptionsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
 
+        const ajouts = exceptions.filter(ex => ex.type === 'ajout');
+
         let planning = [];
 
         for (let i = 0; i < 7; i++) {
@@ -120,6 +112,7 @@ export default function StudentPortal() {
             const jourIndexJS = dateDuJour.getDay();
             const dateStr = dateDuJour.toLocaleDateString('fr-CA');
 
+            // 1. Groupes Hebdomadaires
             const groupesDuJour = allGroups.filter(g => {
                 if (g.jour !== jourIndexJS) return false;
                 const debut = g.dateDebut?.toDate ? g.dateDebut.toDate() : new Date('2000-01-01');
@@ -128,19 +121,33 @@ export default function StudentPortal() {
                 return dateDuJour >= debut && dateDuJour <= fin;
             });
 
-            groupesDuJour.forEach(groupe => {
-                const estAnnule = exceptions.some(ex => ex.groupeId === groupe.id && ex.date === dateStr && ex.type === "annulation");
-                if (estAnnule) return;
+            // 2. Séances Exceptionnelles (Ajouts)
+            const ajoutsDuJour = ajouts.filter(a => a.date === dateStr).map(a => ({
+                id: a.id,
+                ...a.newSessionData,
+                isExceptionnel: true,
+                type: 'ajout'
+            }));
 
-                const seanceId = `${dateStr}_${groupe.id}`;
+            const tousLesCreneaux = [...groupesDuJour, ...ajoutsDuJour];
+
+            tousLesCreneaux.forEach(groupe => {
+                // Gestion Annulation
+                if (!groupe.isExceptionnel) {
+                    const estAnnule = exceptions.some(ex => ex.groupeId === groupe.id && ex.date === dateStr && ex.type === "annulation");
+                    if (estAnnule) return;
+                }
+
+                const seanceId = groupe.isExceptionnel ? groupe.id : `${dateStr}_${groupe.id}`;
                 const attendanceDoc = attendances.find(a => a.id === seanceId);
+
                 const statusMap = attendanceDoc?.status || {};
                 const waitingListIds = attendanceDoc?.waitingList || [];
 
-                // --- 1. LISTE DES PRÉSENTS (Pour l'affichage affinité) ---
-                const recurrentsIds = allEleves
-                    .filter(e => e.enrolledGroupIds && e.enrolledGroupIds.includes(groupe.id))
-                    .map(e => e.id);
+                // --- 1. LISTE DES PRÉSENTS ---
+                const recurrentsIds = (!groupe.isExceptionnel)
+                    ? allEleves.filter(e => e.enrolledGroupIds && e.enrolledGroupIds.includes(groupe.id)).map(e => e.id)
+                    : [];
 
                 const participantsSet = new Set(recurrentsIds);
                 Object.entries(statusMap).forEach(([uid, st]) => {
@@ -148,28 +155,23 @@ export default function StudentPortal() {
                     else if (st === 'present') participantsSet.add(uid);
                 });
 
-                // Récupération des objets élèves complets pour l'affichage
                 const participantsDetails = Array.from(participantsSet)
                     .map(uid => allEleves.find(e => e.id === uid))
-                    .filter(Boolean)
-                    .sort((a, b) => a.prenom.localeCompare(b.prenom));
+                    .filter(Boolean);
 
                 const occupiedCount = participantsDetails.length;
                 const placesRestantes = groupe.places - occupiedCount;
 
-                // --- 2. LISTE D'ATTENTE (Nouveau) ---
-                const waitingListDetails = waitingListIds
-                    .map(uid => allEleves.find(e => e.id === uid))
-                    .filter(Boolean);
-
+                const waitingListDetails = waitingListIds.map(uid => allEleves.find(e => e.id === uid)).filter(Boolean);
                 const myStatus = statusMap[student.id];
-                const estInscritRecurrent = student.enrolledGroupIds && student.enrolledGroupIds.includes(groupe.id);
+                const estInscritRecurrent = !groupe.isExceptionnel && student.enrolledGroupIds && student.enrolledGroupIds.includes(groupe.id);
+
                 const isMeAbsent = estInscritRecurrent && (myStatus === 'absent' || myStatus === 'absent_announced');
                 const isMeGuest = !estInscritRecurrent && myStatus === 'present';
                 const isInWaitingList = waitingListIds.includes(student.id);
 
                 planning.push({
-                    type: 'standard',
+                    type: groupe.isExceptionnel ? 'ajout' : 'standard',
                     groupe,
                     dateObj: dateDuJour,
                     dateStr,
@@ -180,9 +182,10 @@ export default function StudentPortal() {
                     isMeAbsent,
                     isMeGuest,
                     isInWaitingList,
-                    participantsDetails, // Liste complète des objets élèves présents
+                    participantsDetails,
                     waitingListDetails,
-                    donneesGlobales: donneesGlobales   // Liste complète des objets élèves en attente
+                    donneesGlobales,
+                    isExceptionnel: !!groupe.isExceptionnel
                 });
             });
         }
@@ -191,132 +194,21 @@ export default function StudentPortal() {
         setLoading(false);
     };
 
-    // --- ACTIONS ---
+    // --- ACTIONS (Refresh) ---
     const refreshData = () => {
-        // On ferme la modale et on recharge
         setSelectedSession(null);
-        getDoc(doc(db, "eleves", student.id)).then(snap => {
-            setStudent({ id: snap.id, ...snap.data() });
-            calculerPlanningSemaine();
-        });
+        // Petit délai pour laisser Firestore se mettre à jour
+        setTimeout(() => {
+            getDoc(doc(db, "eleves", student.id)).then(snap => {
+                setStudent({ id: snap.id, ...snap.data() });
+                calculerPlanningSemaine();
+            });
+        }, 500);
     };
 
-    // Au clic sur la carte, on ouvre juste la modale
-    const openSessionDetails = (session) => {
-        setSelectedSession(session);
-    };
-
-    const handleBooking = async () => {
-        if (!selectedSession) return;
-        const session = selectedSession;
-
-        const soldeActuel = student.absARemplacer || 0;
-        let messageConfirmation = "";
-
-        if (soldeActuel <= 0) {
-            messageConfirmation = `⚠️ Vous n'avez plus de crédits.\nVotre solde passera à ${soldeActuel - 1}.\n\nConfirmer l'inscription ?`;
-        } else {
-            messageConfirmation = `Réserver ${session.groupe.nom} ? (1 crédit sera utilisé)`;
-        }
-
-        if (!confirm(messageConfirmation)) return;
-
-        try {
-            const batch = writeBatch(db);
-            const batchRef = doc(db, "attendance", session.seanceId);
-            const studentRef = doc(db, "eleves", student.id);
-
-            batch.set(batchRef, {
-                date: session.dateStr,
-                groupeId: session.groupe.id,
-                nomGroupe: session.groupe.nom,
-                realDate: Timestamp.fromDate(session.dateObj),
-                status: { [student.id]: 'present' },
-                updatedAt: serverTimestamp()
-            }, { merge: true });
-
-            batch.update(studentRef, { absARemplacer: increment(-1) });
-            await batch.commit();
-            refreshData();
-        } catch (e) { console.error(e); alert("Erreur"); }
-    };
-
-    const handleCancel = async () => {
-        if (!selectedSession) return;
-        const session = selectedSession;
-
-        let msg = session.estInscritRecurrent
-            ? "Signaler votre absence (+1 crédit) ?"
-            : "Annuler votre réservation (Crédit remboursé) ?";
-
-        if (!confirm(msg)) return;
-        try {
-            const batch = writeBatch(db);
-            const ref = doc(db, "attendance", session.seanceId);
-            const studentRef = doc(db, "eleves", student.id);
-
-            if (session.estInscritRecurrent) {
-                batch.set(ref, {
-                    date: session.dateStr,
-                    groupeId: session.groupe.id,
-                    nomGroupe: session.groupe.nom,
-                    realDate: Timestamp.fromDate(session.dateObj),
-                    status: { [student.id]: 'absent_announced' },
-                    updatedAt: serverTimestamp()
-                }, { merge: true });
-                batch.update(studentRef, { absARemplacer: increment(1) });
-            } else {
-                batch.update(ref, { [`status.${student.id}`]: deleteField() });
-                batch.update(studentRef, { absARemplacer: increment(1) });
-            }
-            await batch.commit();
-            refreshData();
-        } catch (e) { console.error(e); alert("Erreur"); }
-    };
-
-    const handleUncancel = async () => {
-        if (!selectedSession) return;
-        const session = selectedSession;
-
-        const soldeActuel = student.absARemplacer || 0;
-        let msg = "Annuler l'absence et venir au cours (-1 crédit) ?";
-        if (soldeActuel <= 0) {
-            msg = `Annuler l'absence ?\nVotre solde est à ${soldeActuel}, il passera à ${soldeActuel - 1}.`;
-        }
-
-        if (!confirm(msg)) return;
-        try {
-            const batch = writeBatch(db);
-            const ref = doc(db, "attendance", session.seanceId);
-            const studentRef = doc(db, "eleves", student.id);
-            batch.update(ref, { [`status.${student.id}`]: deleteField() });
-            batch.update(studentRef, { absARemplacer: increment(-1) });
-            await batch.commit();
-            refreshData();
-        } catch (e) { console.error(e); alert("Erreur"); }
-    };
-
-    const joinWaitingList = async () => {
-        if (!selectedSession) return;
-        const session = selectedSession;
-
-        if (!confirm("Rejoindre la file d'attente ?")) return;
-        try {
-            const ref = doc(db, "attendance", session.seanceId);
-            await setDoc(ref, {
-                date: session.dateStr,
-                groupeId: session.groupe.id,
-                nomGroupe: session.groupe.nom,
-                realDate: Timestamp.fromDate(session.dateObj),
-                waitingList: arrayUnion(student.id)
-            }, { merge: true });
-            alert("Ajouté !");
-            refreshData();
-        } catch (e) { console.error(e); }
-    };
-
+    // --- RENDER LOGIN ---
     if (!student) {
-        return ( /* ... LOGIN SCREEN inchangé ... */
+        return (
             <div className="min-h-screen flex items-center justify-center bg-teal-50 p-4">
                 <div className="bg-white p-8 rounded-2xl shadow-xl w-full max-w-md">
                     <h1 className="text-3xl font-playfair font-bold text-teal-800 mb-6 text-center">Espace Élève 🧘</h1>
@@ -368,7 +260,6 @@ export default function StudentPortal() {
             </header>
 
             <main className="flex-1 overflow-auto p-2 md:p-6 relative">
-
                 {loading && <div className="text-center py-10 text-gray-400">Chargement...</div>}
 
                 {/* VUE MOBILE */}
@@ -387,6 +278,8 @@ export default function StudentPortal() {
                                         let bg = "bg-white border-gray-200";
                                         let centerText = null;
 
+                                        if (sess.type === 'ajout') bg = "bg-purple-50/50 border-purple-200";
+
                                         if (sess.estInscritRecurrent) {
                                             if (sess.isMeAbsent) {
                                                 bg = "bg-orange-50 border-orange-300";
@@ -401,10 +294,11 @@ export default function StudentPortal() {
                                         }
 
                                         return (
-                                            <div key={sess.seanceId} onClick={() => openSessionDetails(sess)} className={`p-3 rounded-lg border shadow-sm ${bg} active:scale-95 transition-transform flex justify-between items-center`}>
+                                            <div key={sess.seanceId} onClick={() => setSelectedSession(sess)} className={`p-3 rounded-lg border shadow-sm ${bg} active:scale-95 transition-transform flex justify-between items-center cursor-pointer`}>
                                                 <div>
                                                     <div className="font-bold text-gray-800">{sess.groupe.nom}</div>
                                                     <div className="text-xs font-mono text-gray-500">{sess.groupe.heureDebut}</div>
+                                                    {sess.groupe.theme && <div className="text-xs text-purple-600 italic mt-0.5">"{sess.groupe.theme}"</div>}
                                                     <div className={`text-xs mt-1 ${sess.placesRestantes > 0 ? "text-green-600" : "text-red-500"}`}>
                                                         {getPlacesLabel(sess.placesRestantes)}
                                                     </div>
@@ -453,19 +347,30 @@ export default function StudentPortal() {
                                         const stylePos = getCardStyle(sess.groupe.heureDebut, sess.groupe.duree);
                                         const isFull = sess.placesRestantes <= 0;
 
-                                        let containerClass = "hover:shadow-md cursor-pointer border-l-4 transition-all opacity-95 hover:opacity-100";
+                                        let containerClass = "hover:shadow-md cursor-pointer border-l-4 transition-all opacity-95 hover:opacity-100 flex flex-col justify-between";
                                         let titleColor = "text-gray-700";
                                         let topBadge = null;
                                         let centerOverlay = null;
 
+                                        // STYLE DE BASE
+                                        if (sess.type === 'ajout') {
+                                            containerClass += " bg-purple-50/40 border-purple-300";
+                                            titleColor = "text-purple-900";
+                                            if (!sess.isMeGuest) topBadge = <span className="text-[9px] font-bold text-purple-700 bg-purple-100 px-1 rounded">SPÉCIAL</span>;
+                                        } else {
+                                            containerClass += " bg-white border-gray-200 hover:border-teal-300";
+                                            titleColor = "text-gray-800";
+                                        }
+
+                                        // STYLE ÉTAT
                                         if (sess.estInscritRecurrent) {
                                             if (sess.isMeAbsent) {
-                                                containerClass += " bg-orange-50 border-orange-400";
+                                                containerClass = containerClass.replace('bg-white', 'bg-orange-50').replace('border-gray-200', 'border-orange-400');
                                                 titleColor = "text-orange-900 line-through decoration-orange-300";
                                                 topBadge = <span className="text-[9px] font-bold text-orange-600 bg-white/80 px-1 rounded">ABSENCE</span>;
                                                 centerOverlay = <div className="text-orange-300/20 font-black text-2xl -rotate-12 select-none">ABSENT</div>;
                                             } else {
-                                                containerClass += " bg-teal-50 border-teal-500";
+                                                containerClass = containerClass.replace('bg-white', 'bg-teal-50').replace('border-gray-200', 'border-teal-500');
                                                 titleColor = "text-teal-900";
                                                 topBadge = <span className="text-[9px] font-bold text-teal-700 bg-white/80 px-1 rounded">HEBDOMADAIRE</span>;
                                                 centerOverlay = (
@@ -476,9 +381,9 @@ export default function StudentPortal() {
                                                 );
                                             }
                                         } else if (sess.isMeGuest) {
-                                            containerClass += " bg-purple-50 border-purple-500";
+                                            containerClass = "bg-purple-50 border-purple-500 border-l-4 " + containerClass.split(' ').filter(c => !c.startsWith('bg-') && !c.startsWith('border-')).join(' ');
                                             titleColor = "text-purple-900";
-                                            topBadge = <span className="text-[9px] font-bold text-purple-700 bg-white/80 px-1 rounded">EXCEPTIONNEL</span>;
+                                            topBadge = <span className="text-[9px] font-bold text-purple-700 bg-white/80 px-1 rounded">RÉSERVÉ</span>;
                                             centerOverlay = (
                                                 <div className="bg-white/90 px-3 py-1 rounded-lg border-2 border-purple-600 shadow-sm flex items-center gap-1 z-10">
                                                     <span className="text-purple-700 font-black text-sm md:text-base tracking-widest">RÉSERVÉ</span>
@@ -487,14 +392,11 @@ export default function StudentPortal() {
                                             );
                                         } else {
                                             if (isFull) {
-                                                containerClass += " bg-gray-50 border-gray-300 opacity-60";
+                                                containerClass += " opacity-60";
                                                 titleColor = "text-gray-400";
-                                            } else {
-                                                containerClass += " bg-white border-gray-200 hover:border-teal-300";
-                                                titleColor = "text-gray-800";
                                             }
                                             if (sess.isInWaitingList) {
-                                                containerClass = "bg-orange-50 border-orange-300 border-dashed";
+                                                containerClass = "bg-orange-50 border-orange-300 border-dashed border-l-4";
                                                 centerOverlay = <div className="bg-orange-100 text-orange-800 font-bold px-2 py-1 rounded text-xs z-10">EN ATTENTE 🕒</div>;
                                             }
                                         }
@@ -502,11 +404,17 @@ export default function StudentPortal() {
                                         return (
                                             <div
                                                 key={sess.seanceId}
-                                                onClick={() => openSessionDetails(sess)}
-                                                className={`absolute left-1 right-1 rounded-md p-2 overflow-hidden flex flex-col justify-between ${containerClass}`}
+                                                // AJOUT Z-20 pour être sûr que c'est cliquable au dessus des lignes
+                                                className={`absolute left-1 right-1 rounded-md p-2 overflow-hidden flex flex-col justify-between z-20 ${containerClass}`}
                                                 style={stylePos}
+                                                // AJOUT pour déboguer si le clic ne marche toujours pas
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    console.log("Clic session", sess);
+                                                    setSelectedSession(sess);
+                                                }}
                                             >
-                                                <div className="relative z-0">
+                                                <div className="relative z-0 pointer-events-none">
                                                     <div className="flex justify-between items-start">
                                                         {topBadge}
                                                     </div>
@@ -516,6 +424,12 @@ export default function StudentPortal() {
                                                     <div className="text-[10px] text-gray-500 font-mono">
                                                         {sess.groupe.heureDebut}
                                                     </div>
+
+                                                    {sess.groupe.theme && !sess.estInscritRecurrent && !sess.isMeGuest && (
+                                                        <div className="text-[9px] text-purple-700 italic truncate mt-1 pt-1 border-t border-purple-100">
+                                                            "{sess.groupe.theme}"
+                                                        </div>
+                                                    )}
                                                 </div>
 
                                                 {centerOverlay && (
@@ -524,7 +438,7 @@ export default function StudentPortal() {
                                                     </div>
                                                 )}
 
-                                                <div className="relative z-0 flex justify-between items-end border-t border-black/5 pt-1 mt-1">
+                                                <div className="relative z-0 flex justify-between items-end border-t border-black/5 pt-1 mt-1 pointer-events-none">
                                                     <div className={`text-[10px] font-bold ${isFull && !sess.estInscritRecurrent && !sess.isMeGuest ? 'text-red-500' : 'text-green-600'}`}>
                                                         {getPlacesLabel(sess.placesRestantes)}
                                                     </div>
@@ -545,7 +459,7 @@ export default function StudentPortal() {
                     session={selectedSession}
                     student={student}
                     onClose={() => setSelectedSession(null)}
-                    onUpdate={refreshData} // Fonction qui recharge le planning global
+                    onUpdate={refreshData}
                 />
             )}
         </div>

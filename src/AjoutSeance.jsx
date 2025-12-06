@@ -1,108 +1,182 @@
 import { useState, useEffect } from 'react';
 import { db } from './firebase';
-import { doc, setDoc, updateDoc } from 'firebase/firestore';
+import { collection, addDoc, updateDoc, doc, deleteDoc } from 'firebase/firestore'; // Import deleteDoc
 
-export default function AjoutSeance({ onClose, onSuccess, initialData = null }) {
+export default function AjoutSeance({ onClose, onSuccess, initialData }) {
     const [formData, setFormData] = useState({
+        nom: 'Séance Exceptionnelle',
         date: '',
-        heure: '10:00',
-        nom: 'Atelier Yoga',
+        heureDebut: '18:00',
         duree: 90,
-        places: 7
+        places: 10,
+        theme: '',
+        type: 'ajout'
     });
 
     useEffect(() => {
         if (initialData) {
-            // Mode Modification : on pré-remplit
-            // initialData contient : { dateReelle (Date), heureDebut, nom, duree, places, originalExceptionId, ... }
-            const dateIso = initialData.dateReelle.toLocaleDateString('fr-CA'); // YYYY-MM-DD
-            setFormData({
-                date: dateIso,
-                heure: initialData.heureDebut,
-                nom: initialData.nom,
-                duree: initialData.duree,
-                places: initialData.places
-            });
-        } else {
-            // Mode Création : date de demain par défaut
-            const demain = new Date();
-            demain.setDate(demain.getDate() + 1);
-            setFormData(prev => ({ ...prev, date: demain.toISOString().split('T')[0] }));
+            setFormData(prev => ({ ...prev, ...initialData }));
         }
     }, [initialData]);
 
     const handleSubmit = async (e) => {
         e.preventDefault();
         try {
-            const dataToSave = {
-                date: formData.date, // Sert de clé de tri et d'affichage
-                type: "ajout",
-                newSessionData: {
-                    nom: formData.nom,
-                    heureDebut: formData.heure,
-                    duree: parseInt(formData.duree),
-                    places: parseInt(formData.places),
-                    jour: new Date(formData.date).getDay()
-                }
+            const sessionData = {
+                nom: formData.nom,
+                heureDebut: formData.heureDebut,
+                duree: parseInt(formData.duree),
+                places: parseInt(formData.places),
+                theme: formData.theme || ""
             };
 
-            if (initialData && initialData.originalExceptionId) {
-                // UPDATE
-                await updateDoc(doc(db, "exceptions", initialData.originalExceptionId), dataToSave);
-                alert("Séance modifiée !");
-            } else {
-                // CREATE
-                const cleanNom = formData.nom.replace(/\s+/g, '');
-                const exceptionId = `${formData.date}_${cleanNom}_ADD_${Date.now()}`; // Ajout Timestamp pour unicité
-                await setDoc(doc(db, "exceptions", exceptionId), dataToSave);
-                alert("Séance ajoutée !");
+            if (initialData && initialData.id) {
+                const docId = initialData.originalExceptionId || initialData.id;
+                await updateDoc(doc(db, "exceptions", docId), {
+                    date: formData.date,
+                    newSessionData: sessionData
+                });
+            }
+            else {
+                await addDoc(collection(db, "exceptions"), {
+                    date: formData.date,
+                    type: "ajout",
+                    groupeId: "ajout_" + Date.now(),
+                    newSessionData: sessionData
+                });
             }
 
             onSuccess();
             onClose();
         } catch (error) {
-            console.error(error);
-            alert("Erreur lors de la sauvegarde");
+            console.error("Erreur lors de l'enregistrement :", error);
+            alert("Une erreur est survenue lors de l'enregistrement.");
+        }
+    };
+
+    // --- FONCTION SUPPRESSION ---
+    const handleDelete = async () => {
+        if (!initialData || !initialData.id) return;
+
+        if (confirm("⚠️ Voulez-vous vraiment SUPPRIMER définitivement cette séance ?\n\nCette action est irréversible.")) {
+            try {
+                const docId = initialData.originalExceptionId || initialData.id;
+                await deleteDoc(doc(db, "exceptions", docId));
+                onSuccess();
+                onClose();
+            } catch (error) {
+                console.error("Erreur suppression:", error);
+                alert("Erreur lors de la suppression.");
+            }
         }
     };
 
     return (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
-                <div className="bg-teal-800 p-4 text-white flex justify-between items-center">
-                    <h2 className="text-xl font-bold">{initialData ? "Modifier la séance" : "Ajouter une séance"}</h2>
-                    <button onClick={onClose} className="text-white hover:text-gray-200 text-xl font-bold px-2">✕</button>
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden animate-in fade-in zoom-in-95">
+
+                <div className="bg-purple-700 p-4 text-white flex justify-between items-center">
+                    <h2 className="text-lg font-bold font-playfair flex items-center gap-2">
+                        ✨ {initialData?.id ? "Modifier la Séance" : "Nouvelle Séance Unique"}
+                    </h2>
+                    <button onClick={onClose} className="bg-white/20 hover:bg-white/30 rounded-full w-8 h-8 flex items-center justify-center font-bold text-sm transition">✕</button>
                 </div>
 
                 <form onSubmit={handleSubmit} className="p-6 space-y-4">
                     <div>
-                        <label className="block text-sm font-bold text-gray-700 mb-1">Date</label>
-                        <input type="date" required value={formData.date} onChange={e => setFormData({ ...formData, date: e.target.value })} className="w-full border p-2 rounded focus:ring-2 focus:ring-teal-500 outline-none" />
+                        <label className="block text-xs font-bold text-gray-500 mb-1 uppercase">Nom de la séance</label>
+                        <input
+                            type="text"
+                            placeholder="ex: Atelier Yoga du Dos"
+                            value={formData.nom}
+                            onChange={e => setFormData({ ...formData, nom: e.target.value })}
+                            className="w-full border border-gray-300 p-2.5 rounded-lg focus:ring-2 focus:ring-purple-500 outline-none font-bold text-gray-800"
+                            required
+                        />
                     </div>
+
+                    <div>
+                        <label className="block text-xs font-bold text-gray-500 mb-1 uppercase">Thème / Description</label>
+                        <textarea
+                            placeholder="Décrivez le contenu de la séance (optionnel)..."
+                            value={formData.theme}
+                            onChange={e => setFormData({ ...formData, theme: e.target.value })}
+                            className="w-full border border-gray-300 p-2.5 rounded-lg focus:ring-2 focus:ring-purple-500 outline-none text-sm h-24 resize-none"
+                        />
+                    </div>
+
                     <div className="grid grid-cols-2 gap-4">
                         <div>
-                            <label className="block text-sm font-bold text-gray-700 mb-1">Heure</label>
-                            <input type="time" required value={formData.heure} onChange={e => setFormData({ ...formData, heure: e.target.value })} className="w-full border p-2 rounded focus:ring-2 focus:ring-teal-500 outline-none" />
+                            <label className="block text-xs font-bold text-gray-500 mb-1 uppercase">Date</label>
+                            <input
+                                type="date"
+                                value={formData.date}
+                                onChange={e => setFormData({ ...formData, date: e.target.value })}
+                                className="w-full border border-gray-300 p-2 rounded-lg focus:ring-2 focus:ring-purple-500 outline-none"
+                                required
+                            />
                         </div>
                         <div>
-                            <label className="block text-sm font-bold text-gray-700 mb-1">Durée (min)</label>
-                            <input type="number" required value={formData.duree} onChange={e => setFormData({ ...formData, duree: e.target.value })} className="w-full border p-2 rounded focus:ring-2 focus:ring-teal-500 outline-none" />
+                            <label className="block text-xs font-bold text-gray-500 mb-1 uppercase">Heure Début</label>
+                            <input
+                                type="time"
+                                value={formData.heureDebut}
+                                onChange={e => setFormData({ ...formData, heureDebut: e.target.value })}
+                                className="w-full border border-gray-300 p-2 rounded-lg focus:ring-2 focus:ring-purple-500 outline-none"
+                                required
+                            />
                         </div>
                     </div>
-                    <div>
-                        <label className="block text-sm font-bold text-gray-700 mb-1">Nom</label>
-                        <input type="text" required placeholder="Ex: Stage" value={formData.nom} onChange={e => setFormData({ ...formData, nom: e.target.value })} className="w-full border p-2 rounded focus:ring-2 focus:ring-teal-500 outline-none" />
+
+                    <div className="grid grid-cols-2 gap-4 bg-gray-50 p-3 rounded-xl border border-gray-100">
+                        <div>
+                            <label className="block text-xs font-bold text-gray-500 mb-1 uppercase">Durée (min)</label>
+                            <input
+                                type="number"
+                                value={formData.duree}
+                                onChange={e => setFormData({ ...formData, duree: e.target.value })}
+                                className="w-full border border-gray-300 p-2 rounded-lg focus:ring-2 focus:ring-purple-500 outline-none text-center font-bold"
+                            />
+                        </div>
+                        <div>
+                            <label className="block text-xs font-bold text-purple-600 mb-1 uppercase">Nb. Places</label>
+                            <input
+                                type="number"
+                                value={formData.places}
+                                onChange={e => setFormData({ ...formData, places: e.target.value })}
+                                className="w-full border border-purple-200 bg-white p-2 rounded-lg focus:ring-2 focus:ring-purple-500 outline-none text-center font-bold text-purple-800"
+                            />
+                        </div>
                     </div>
-                    <div>
-                        <label className="block text-sm font-bold text-gray-700 mb-1">Places</label>
-                        <input type="number" required value={formData.places} onChange={e => setFormData({ ...formData, places: e.target.value })} className="w-full border p-2 rounded focus:ring-2 focus:ring-teal-500 outline-none" />
-                    </div>
-                    <div className="pt-4 flex justify-end gap-3">
-                        <button type="button" onClick={onClose} className="px-4 py-2 rounded-lg font-bold text-gray-500 hover:bg-gray-100 border">Annuler</button>
-                        <button type="submit" className="px-6 py-2 rounded-lg font-bold text-white bg-teal-800 hover:bg-teal-900 shadow-md transition">
-                            {initialData ? "Enregistrer" : "Ajouter"}
+
+                    <div className="flex gap-3 pt-2">
+                        {/* BOUTON SUPPRIMER (Seulement si modification) */}
+                        {initialData?.id && (
+                            <button
+                                type="button"
+                                onClick={handleDelete}
+                                className="px-4 py-3 rounded-xl font-bold text-red-600 bg-red-50 border border-red-100 hover:bg-red-100 transition"
+                                title="Supprimer définitivement"
+                            >
+                                🗑️
+                            </button>
+                        )}
+
+                        <button
+                            type="button"
+                            onClick={onClose}
+                            className="flex-1 px-4 py-3 rounded-xl font-bold text-gray-600 bg-gray-100 hover:bg-gray-200 transition"
+                        >
+                            Annuler
+                        </button>
+                        <button
+                            type="submit"
+                            className="flex-1 px-4 py-3 rounded-xl font-bold text-white bg-purple-600 hover:bg-purple-700 shadow-lg shadow-purple-200 transition transform active:scale-95"
+                        >
+                            Enregistrer
                         </button>
                     </div>
+
                 </form>
             </div>
         </div>

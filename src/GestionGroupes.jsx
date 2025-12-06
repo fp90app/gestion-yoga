@@ -4,7 +4,7 @@ import { collection, addDoc, getDocs, updateDoc, doc, query, where, Timestamp } 
 
 const JOURS = ["Dimanche", "Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi"];
 
-export default function GestionGroupes({ onClose, onUpdate }) {
+export default function GestionGroupes({ onClose, onUpdate, initialEditId }) {
     const [groupes, setGroupes] = useState([]);
     const [loading, setLoading] = useState(true);
     const [editingId, setEditingId] = useState(null);
@@ -35,6 +35,16 @@ export default function GestionGroupes({ onClose, onUpdate }) {
     useEffect(() => {
         fetchGroupes();
     }, []);
+
+    useEffect(() => {
+        if (initialEditId && groupes.length > 0) {
+            const groupToEdit = groupes.find(g => g.id === initialEditId);
+            if (groupToEdit) {
+                handleEdit(groupToEdit);
+            }
+        }
+    }, [initialEditId, groupes]);
+
 
     const fetchGroupes = async () => {
         try {
