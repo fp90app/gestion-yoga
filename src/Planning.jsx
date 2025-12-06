@@ -31,7 +31,6 @@ const ajouterJours = (date, jours) => {
 
 const formaterDateSimple = (date) => `${date.getDate()} ${MOIS[date.getMonth()]}`;
 
-
 export default function Planning() {
     const [coursAffiches, setCoursAffiches] = useState([]);
     const [donneesBrutes, setDonneesBrutes] = useState({ groupes: [], eleves: [], exceptions: [], attendances: [] });
@@ -83,9 +82,16 @@ export default function Planning() {
                 waitingCount = attendanceDoc.waitingList ? attendanceDoc.waitingList.length : 0;
                 Object.entries(status).forEach(([uid, st]) => {
                     const eleve = eleves.find(e => e.id === uid);
-                    const estInscrit = eleve?.enrolledGroupIds?.includes(groupeId);
-                    if (estInscrit && (st === 'absent' || st === 'absent_announced')) nbAbsents++;
-                    if (!estInscrit && st === 'present') nbInvites++;
+                    if (!eleve) return;
+
+                    const estInscrit = eleve.enrolledGroupIds && eleve.enrolledGroupIds.includes(groupeId);
+
+                    if (estInscrit && (st === 'absent' || st === 'absent_announced')) {
+                        nbAbsents++;
+                    }
+                    if (!estInscrit && st === 'present') {
+                        nbInvites++;
+                    }
                 });
             }
             return { reel: inscritsBase - nbAbsents + nbInvites, waitingCount };
@@ -94,6 +100,27 @@ export default function Planning() {
         // 1. Récurrents
         groupes.forEach(groupe => {
             const dateDuCours = ajouterJours(lundiActuel, groupe.jour - 1);
+
+            // =========================================================
+            //  NOUVEAU : FILTRE TEMPOREL (SAISONNALITÉ)
+            // =========================================================
+            // On vérifie si ce cours est actif pour la date affichée
+            if (groupe.dateDebut && groupe.dateFin) {
+                // Gestion robuste : conversion Timestamp -> Date ou new Date() direct
+                const debut = groupe.dateDebut.toDate ? groupe.dateDebut.toDate() : new Date(groupe.dateDebut);
+                const fin = groupe.dateFin.toDate ? groupe.dateFin.toDate() : new Date(groupe.dateFin);
+
+                // On normalise à minuit pour comparer juste les jours
+                debut.setHours(0, 0, 0, 0);
+                fin.setHours(23, 59, 59, 999); // Fin inclusif
+
+                // Si la date du calendrier est HORS de la période du groupe, on ne l'affiche pas
+                if (dateDuCours < debut || dateDuCours > fin) {
+                    return; // On passe au groupe suivant
+                }
+            }
+            // =========================================================
+
             const dateStr = dateDuCours.toLocaleDateString('fr-CA');
             const estAnnule = exceptions.some(ex => ex.groupeId === groupe.id && ex.date === dateStr && ex.type === "annulation");
             const inscritsCount = eleves.filter(e => e.enrolledGroupIds && e.enrolledGroupIds.includes(groupe.id)).length;
@@ -177,9 +204,7 @@ export default function Planning() {
                 </div>
             </div>
 
-            {/* ===================================================================== */}
-            {/* VUE MOBILE (Cartes empilées - Visible uniquement sur petit écran)     */}
-            {/* ===================================================================== */}
+            {/* VUE MOBILE */}
             <div className="block md:hidden space-y-4">
                 {coursAffiches.map((groupe) => {
                     const taux = groupe.presentCount / groupe.places;
@@ -213,9 +238,7 @@ export default function Planning() {
                 {coursAffiches.length === 0 && <div className="text-center py-10 text-gray-400">Aucun cours cette semaine.</div>}
             </div>
 
-            {/* ===================================================================== */}
-            {/* VUE DESKTOP (Calendrier Semainier - Visible sur écran moyen+)         */}
-            {/* ===================================================================== */}
+            {/* VUE DESKTOP */}
             <div className="hidden md:flex bg-white rounded-xl shadow-lg border border-gray-200 overflow-hidden relative">
 
                 {/* COLONNE HEURES */}
@@ -248,13 +271,12 @@ export default function Planning() {
                                     <div key={i} className="absolute w-full border-b border-gray-100" style={{ top: i * PIXELS_PAR_HEURE, height: PIXELS_PAR_HEURE }}></div>
                                 ))}
 
-                                {/* CARTES COURS (Nouveau Design) */}
+                                {/* CARTES COURS */}
                                 {coursDuJour.map(groupe => {
                                     const stylePos = getCardStyle(groupe.heureDebut, groupe.duree);
                                     const taux = groupe.presentCount / groupe.places;
                                     const estComplet = taux >= 1;
 
-                                    // Couleurs dynamiques
                                     let containerClass = "bg-teal-50 border-teal-500 hover:bg-teal-100 text-teal-900";
                                     if (groupe.estAnnule) containerClass = "bg-gray-100 border-gray-400 opacity-60 text-gray-500";
                                     else if (groupe.type === 'ajout') containerClass = "bg-purple-50 border-purple-500 hover:bg-purple-100 text-purple-900";
@@ -268,7 +290,6 @@ export default function Planning() {
                                             style={stylePos}
                                             title={`${groupe.nom} (${groupe.heureDebut})`}
                                         >
-                                            {/* Haut de la carte */}
                                             <div>
                                                 <div className="font-bold text-xs md:text-sm leading-tight truncate">
                                                     {groupe.estAnnule && "🚫 "}{groupe.nom}
@@ -278,7 +299,6 @@ export default function Planning() {
                                                 </div>
                                             </div>
 
-                                            {/* Bas de la carte (Stats) */}
                                             {!groupe.estAnnule && (
                                                 <div className="flex justify-between items-end mt-1 pt-1 border-t border-black/5">
                                                     <div className="flex items-center gap-1">
@@ -309,9 +329,9 @@ export default function Planning() {
                     date={seanceSelectionnee.date}
                     onClose={() => { setSeanceSelectionnee(null); fetchDonnees(); }}
                     onEdit={(groupe) => {
-                        setSeanceSelectionnee(null); // On ferme la gestion
-                        setExceptionAEditer(groupe); // On prépare les données
-                        setShowAjoutModal(true);     // On ouvre la modale d'ajout/modif
+                        setSeanceSelectionnee(null);
+                        setExceptionAEditer(groupe);
+                        setShowAjoutModal(true);
                     }}
                 />
             )}
@@ -319,10 +339,10 @@ export default function Planning() {
                 <AjoutSeance
                     onClose={() => {
                         setShowAjoutModal(false);
-                        setExceptionAEditer(null); // Reset des données quand on ferme
+                        setExceptionAEditer(null);
                     }}
                     onSuccess={() => fetchDonnees()}
-                    initialData={exceptionAEditer} // On passe les données s'il y en a
+                    initialData={exceptionAEditer}
                 />
             )}
             {showGestionGroupes && <GestionGroupes onClose={() => setShowGestionGroupes(false)} onUpdate={() => fetchDonnees()} />}
