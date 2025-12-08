@@ -38,7 +38,7 @@ exports.onPlaceLiberated = functions.region("europe-west1").firestore
 
         // 4. Envoyer l'email via l'API Brevo (Appel direct)
         const emailData = {
-            sender: { name: "Yoga App", email: "putod.sandrine@gmail.com" }, // Votre email validé dans Brevo
+            sender: { name: "Yoga - Sandrine PUTOD", email: "putod.sandrine@gmail.com" }, // Votre email validé dans Brevo
             to: emails, // Brevo accepte une liste, tout le monde recevra le mail
             subject: "Une place s'est libérée !",
             htmlContent: `
