@@ -13,10 +13,10 @@ import {
     serverTimestamp,
     Timestamp,
     deleteField,
-    addDoc,     // <--- NOUVEAU
-    deleteDoc,  // <--- NOUVEAU
-    query,      // <--- NOUVEAU
-    where       // <--- NOUVEAU
+    addDoc,
+    deleteDoc,
+    query,
+    where
 } from 'firebase/firestore';
 
 export default function GestionSeance({ groupe, date, onClose, onEdit }) {
@@ -36,8 +36,6 @@ export default function GestionSeance({ groupe, date, onClose, onEdit }) {
 
     const [loading, setLoading] = useState(true);
     const [estAnnule, setEstAnnule] = useState(false);
-
-    // Pour stocker l'ID du document d'annulation s'il existe
     const [annulationDocId, setAnnulationDocId] = useState(null);
 
     // --- SÉLECTEURS ---
@@ -58,8 +56,7 @@ export default function GestionSeance({ groupe, date, onClose, onEdit }) {
 
     const chargerDonnees = async () => {
         try {
-            // 1. Vérif Annulation (si standard)
-            // On cherche s'il existe une exception de type "annulation" pour ce groupe et cette date
+            // 1. Vérif Annulation
             if (!isExceptionnel) {
                 const q = query(
                     collection(db, "exceptions"),
@@ -86,7 +83,6 @@ export default function GestionSeance({ groupe, date, onClose, onEdit }) {
             // 3. Charger l'Attendance
             const attendanceDoc = await getDoc(doc(db, "attendance", seanceId));
 
-            // Valeurs par défaut
             let savedStatus = {};
             let savedReplacementLinks = {};
             let savedGuestOrigins = {};
@@ -142,12 +138,10 @@ export default function GestionSeance({ groupe, date, onClose, onEdit }) {
         }
     };
 
-    // --- NOUVELLES FONCTIONS D'ADMINISTRATION ---
+    // --- ACTIONS ADMIN ---
 
-    // 1. ANNULER JUSTE CETTE SÉANCE (Ponctuel)
     const handleAnnulerUnique = async () => {
-        if (!confirm(`Voulez-vous vraiment ANNULER la séance du ${date.toLocaleDateString()} ?\n\nElle apparaîtra barrée sur le planning.`)) return;
-
+        if (!confirm(`Voulez-vous vraiment ANNULER la séance du ${date.toLocaleDateString()} ?`)) return;
         try {
             setLoading(true);
             await addDoc(collection(db, "exceptions"), {
@@ -155,61 +149,36 @@ export default function GestionSeance({ groupe, date, onClose, onEdit }) {
                 groupeId: groupe.id,
                 type: "annulation"
             });
-            await chargerDonnees(); // Recharge pour afficher l'état annulé
-            if (onClose) onClose(); // Optionnel : fermer ou rester
-        } catch (e) {
-            console.error(e);
-            alert("Erreur lors de l'annulation.");
-        } finally {
-            setLoading(false);
-        }
+            await chargerDonnees();
+        } catch (e) { console.error(e); alert("Erreur annulation"); } finally { setLoading(false); }
     };
 
-    // 2. RÉTABLIR UNE SÉANCE ANNULÉE
     const handleRetablir = async () => {
-        if (!annulationDocId) return;
-        if (!confirm("Rétablir cette séance ?")) return;
-
+        if (!annulationDocId || !confirm("Rétablir cette séance ?")) return;
         try {
             setLoading(true);
             await deleteDoc(doc(db, "exceptions", annulationDocId));
             await chargerDonnees();
-        } catch (e) {
-            console.error(e);
-            alert("Erreur lors du rétablissement.");
-        } finally {
-            setLoading(false);
-        }
+        } catch (e) { console.error(e); alert("Erreur rétablissement"); } finally { setLoading(false); }
     };
 
-    // 3. SUPPRIMER LE GROUPE DÉFINITIVEMENT (Si erreur de création)
     const handleSupprimerDefinitif = async () => {
         const confirmMsg = isExceptionnel
-            ? "Voulez-vous supprimer définitivement cette séance unique ?"
-            : "⚠️ ATTENTION : Vous allez supprimer TOUT le cours récurrent (toutes les dates de l'année).\n\nConfirmer la suppression définitive ?";
-
+            ? "Supprimer définitivement cette séance unique ?"
+            : "⚠️ ATTENTION : Supprimer TOUT le cours récurrent ?";
         if (confirm(confirmMsg)) {
             try {
                 setLoading(true);
-                // Si c'est une exception (ajout), on supprime l'exception
-                // Si c'est un groupe standard, on supprime le groupe
                 const collectionName = isExceptionnel ? "exceptions" : "groupes";
                 const docId = isExceptionnel ? (groupe.originalExceptionId || groupe.id) : groupe.id;
-
                 await deleteDoc(doc(db, collectionName, docId));
-
-                onClose(); // On ferme la modale
-                window.location.reload(); // On recharge pour rafraîchir le planning complet
-            } catch (e) {
-                console.error(e);
-                alert("Erreur lors de la suppression.");
-                setLoading(false);
-            }
+                onClose();
+                window.location.reload();
+            } catch (e) { console.error(e); }
         }
     };
 
-
-    // --- LOGIQUE PRESENCE (Reste inchangé) ---
+    // --- LOGIQUE PRESENCE ---
     const toggleStatus = (eleveId) => {
         const currentStatus = statuses[eleveId];
         const newStatus = currentStatus === 'present' ? 'absent' : 'present';
@@ -221,11 +190,9 @@ export default function GestionSeance({ groupe, date, onClose, onEdit }) {
             const placesTotales = typeof groupe.places === 'number' ? groupe.places : 10;
 
             if (totalOccupation + 1 > placesTotales) {
-                if (!confirm(`⚠️ Le cours est complet (${placesTotales} places).\nVoulez-vous ajouter cette personne en SURNOMBRE ?`)) {
-                    return;
-                }
+                if (!confirm(`⚠️ Cours complet (${placesTotales} places).\nAjouter en SURNOMBRE ?`)) return;
             }
-
+            // Si on revient, on casse le lien de remplacement s'il existait
             const guestIdLinked = Object.keys(replacementLinks).find(key => replacementLinks[key] === eleveId);
             if (guestIdLinked) {
                 const newLinks = { ...replacementLinks };
@@ -235,10 +202,6 @@ export default function GestionSeance({ groupe, date, onClose, onEdit }) {
         }
         setStatuses(prev => ({ ...prev, [eleveId]: newStatus }));
     };
-
-    // ... (Le reste des fonctions preparerAjout, validerAjout, etc. reste identique) ...
-    // Je copie juste les fonctions inchangées pour que le code soit valide si copié/collé,
-    // mais je vais abréger ici pour la lisibilité de la réponse.
 
     const preparerAjout = (mode, targetId = null) => {
         setAddMode(mode);
@@ -252,22 +215,18 @@ export default function GestionSeance({ groupe, date, onClose, onEdit }) {
         if (!eleve) return;
 
         if (addMode === 'permanent') {
-            if (isExceptionnel) {
-                alert("Impossible d'inscrire un titulaire à l'année sur une séance unique.");
-                return;
-            }
-            if (confirm(`Inscrire définitivement ${eleve.prenom} ${eleve.nom} à ce cours (Toute l'année) ?`)) {
+            if (isExceptionnel) { alert("Impossible sur séance unique."); return; }
+            if (confirm(`Inscrire définitivement ${eleve.prenom} ${eleve.nom} ?`)) {
                 try {
-                    await updateDoc(doc(db, "eleves", eleve.id), {
-                        enrolledGroupIds: arrayUnion(groupe.id)
-                    });
+                    await updateDoc(doc(db, "eleves", eleve.id), { enrolledGroupIds: arrayUnion(groupe.id) });
                     chargerDonnees();
                     setAddMode(null);
-                } catch (e) { console.error(e); alert("Erreur"); }
+                } catch (e) { console.error(e); }
             }
             return;
         }
 
+        // Gestion File d'attente vers Guest
         const vientDeFileAttente = waitingList.find(w => w.id === eleve.id);
         if (vientDeFileAttente) {
             setWaitingList(prev => prev.filter(w => w.id !== eleve.id));
@@ -289,7 +248,7 @@ export default function GestionSeance({ groupe, date, onClose, onEdit }) {
     };
 
     const desinscrireTitulaire = async (eleve) => {
-        if (confirm(`⚠️ ATTENTION : Désinscrire ${eleve.prenom} définitivement ?`)) {
+        if (confirm(`Désinscrire ${eleve.prenom} définitivement ?`)) {
             try {
                 const batch = writeBatch(db);
                 batch.update(doc(db, "eleves", eleve.id), { enrolledGroupIds: arrayRemove(groupe.id) });
@@ -302,7 +261,6 @@ export default function GestionSeance({ groupe, date, onClose, onEdit }) {
                 const newStatuses = { ...statuses };
                 delete newStatuses[eleve.id];
                 setStatuses(newStatuses);
-
                 setInscrits(prev => prev.filter(i => i.id !== eleve.id));
             } catch (e) { console.error(e); }
         }
@@ -330,6 +288,7 @@ export default function GestionSeance({ groupe, date, onClose, onEdit }) {
         }
     };
 
+    // --- LOGIQUE FILE D'ATTENTE ---
     const ajouterAuWaitingList = () => {
         if (!selectedWaitlistId) return;
         const eleve = allStudents.find(e => e.id === selectedWaitlistId);
@@ -338,16 +297,38 @@ export default function GestionSeance({ groupe, date, onClose, onEdit }) {
             setSelectedWaitlistId("");
         }
     };
+
     const supprimerDuWaitingList = (id) => setWaitingList(prev => prev.filter(w => w.id !== id));
-    const promouvoirWaiting = (eleve) => {
-        setSelectedStudentId(eleve.id);
-        setAddMode('guest');
+
+    // ACTION 1 : INTÉGRER INTELLIGEMMENT (Cherche une place vide ou un remplacement)
+    const integrerDepuisFileAttente = (eleve) => {
+        // Chercher un titulaire absent qui n'est PAS déjà remplacé
+        const titulaireAbsentDispo = inscrits.find(t => {
+            const estAbsent = statuses[t.id] === 'absent' || statuses[t.id] === 'absent_announced';
+            const aDejaRemplacant = Object.values(replacementLinks).includes(t.id);
+            return estAbsent && !aDejaRemplacant;
+        });
+
+        // 1. Mise à jour des listes (Waiting -> Invités)
         setWaitingList(prev => prev.filter(w => w.id !== eleve.id));
         setGuestOrigins(prev => ({ ...prev, [eleve.id]: 'waiting' }));
         setInvites(prev => [...prev, eleve]);
         setStatuses(prev => ({ ...prev, [eleve.id]: 'present' }));
-        setSelectedStudentId("");
-        setAddMode(null);
+
+        // 2. Création du lien SI on a trouvé un absent à remplacer
+        if (titulaireAbsentDispo) {
+            setReplacementLinks(prev => ({ ...prev, [eleve.id]: titulaireAbsentDispo.id }));
+        }
+        // Sinon, il prendra une place vide s'il y en a (automatique via le render), ou surnombre s'il n'y en a pas.
+    };
+
+    // ACTION 2 : FORCER (Ajouter sans chercher de lien -> Surnombre)
+    const forcerDepuisFileAttente = (eleve) => {
+        setWaitingList(prev => prev.filter(w => w.id !== eleve.id));
+        setGuestOrigins(prev => ({ ...prev, [eleve.id]: 'waiting' }));
+        setInvites(prev => [...prev, eleve]);
+        setStatuses(prev => ({ ...prev, [eleve.id]: 'present' }));
+        // Pas de lien créé, donc si les places sont prises, il partira en bas (Overflow)
     };
 
     const sauvegarder = async () => {
@@ -373,18 +354,11 @@ export default function GestionSeance({ groupe, date, onClose, onEdit }) {
                 updatedAt: serverTimestamp()
             }, { merge: true });
 
+            // Mise à jour des crédits
             const allIds = new Set([...Object.keys(initialStatus), ...Object.keys(statuses)]);
-
             allIds.forEach(eid => {
-                // --- CORRECTION DÉBUT ---
-                // On vérifie si l'élève existe encore dans la base avant de toucher à ses crédits
                 const studentExists = allStudents.find(s => s.id === eid);
-
-                if (!studentExists) {
-                    console.warn(`L'élève ${eid} n'existe plus, impossible de mettre à jour ses crédits.`);
-                    return; // On passe au suivant sans rien faire, ce qui évite le crash
-                }
-                // --- CORRECTION FIN ---
+                if (!studentExists) return;
 
                 const oldS = initialStatus[eid];
                 const newS = statuses[eid];
@@ -403,9 +377,7 @@ export default function GestionSeance({ groupe, date, onClose, onEdit }) {
                     else if (finalNew !== 'present' && oldS === 'present') change = 1;
                 }
 
-                if (change !== 0) {
-                    batch.update(doc(db, "eleves", eid), { absARemplacer: increment(change) });
-                }
+                if (change !== 0) batch.update(doc(db, "eleves", eid), { absARemplacer: increment(change) });
             });
 
             await batch.commit();
@@ -417,19 +389,23 @@ export default function GestionSeance({ groupe, date, onClose, onEdit }) {
 
     // --- RENDER ---
     const capacity = typeof groupe.places === 'number' ? groupe.places : 10;
+
+    // Calcul des slots disponibles pour affichage
     const validTitulaireIds = inscrits.map(t => t.id);
     const linkedGuestIds = Object.keys(replacementLinks).filter(guestId => {
-        const titulaireId = replacementLinks[guestId];
-        return validTitulaireIds.includes(titulaireId);
+        return validTitulaireIds.includes(replacementLinks[guestId]);
     });
     const freeGuests = invites.filter(i => !linkedGuestIds.includes(i.id));
 
+    // Rendu grille
     const slotsRender = [];
     if (!isExceptionnel) {
         inscrits.forEach(titulaire => slotsRender.push({ type: 'titulaire', student: titulaire }));
     }
     const baseOccupied = isExceptionnel ? 0 : inscrits.length;
     const slotsAvailableForGuests = Math.max(0, capacity - baseOccupied);
+
+    // On remplit les slots libres avec les invités non liés
     for (let i = 0; i < slotsAvailableForGuests; i++) {
         if (i < freeGuests.length) {
             slotsRender.push({ type: 'guest_in_slot', student: freeGuests[i] });
@@ -440,26 +416,57 @@ export default function GestionSeance({ groupe, date, onClose, onEdit }) {
     const overflowGuests = freeGuests.slice(slotsAvailableForGuests);
     const totalPresents = inscrits.filter(i => statuses[i.id] === 'present').length + invites.length;
 
-    const RenderSelector = () => (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 backdrop-blur-[1px]" onClick={() => setAddMode(null)}>
-            <div className="bg-white p-6 rounded-xl shadow-2xl border-2 border-teal-500 w-96" onClick={e => e.stopPropagation()}>
-                <h4 className="text-lg font-bold text-teal-800 mb-4 uppercase flex justify-between items-center border-b pb-2">
-                    {addMode === 'permanent' ? "Inscrire à l'année" : "Ajouter un participant"}
-                    <button onClick={() => setAddMode(null)} className="text-gray-400 hover:text-gray-600 text-xl">✕</button>
-                </h4>
-                <select autoFocus className="w-full text-base border-gray-300 border p-3 rounded-lg mb-6 outline-none" value={selectedStudentId} onChange={e => setSelectedStudentId(e.target.value)}>
-                    <option value="">-- Sélectionner --</option>
-                    {allStudents
-                        .filter(s => !inscrits.find(i => i.id === s.id) && !invites.find(i => i.id === s.id))
-                        .map(s => <option key={s.id} value={s.id}>{s.nom} {s.prenom} ({s.absARemplacer} Cr.)</option>)}
-                </select>
-                <div className="flex gap-3 justify-end">
-                    <button onClick={() => setAddMode(null)} className="px-4 py-2 rounded-lg text-gray-600 hover:bg-gray-100 font-bold">Annuler</button>
-                    <button onClick={validerAjout} disabled={!selectedStudentId} className="px-6 py-2 bg-teal-600 text-white rounded-lg font-bold hover:bg-teal-700">Valider</button>
+    // Nombre réel de places vides (pour savoir si on affiche le bouton "Intégrer")
+    const realFreeSlots = capacity - totalPresents;
+
+    // --- MODALE SÉLECTION ÉLÈVE (Trié) ---
+    const RenderSelector = () => {
+        // Préparation des listes
+        const waitingIds = waitingList.map(w => w.id);
+        const availableStudents = allStudents.filter(s =>
+            !inscrits.find(i => i.id === s.id) &&
+            !invites.find(i => i.id === s.id)
+        );
+
+        // Groupe 1: Ceux de la file d'attente
+        const priorityList = availableStudents.filter(s => waitingIds.includes(s.id));
+        // Groupe 2: Les autres (triés alphabétiquement par défaut lors du fetch)
+        const standardList = availableStudents.filter(s => !waitingIds.includes(s.id));
+
+        return (
+            <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 backdrop-blur-[1px]" onClick={() => setAddMode(null)}>
+                <div className="bg-white p-6 rounded-xl shadow-2xl border-2 border-teal-500 w-96" onClick={e => e.stopPropagation()}>
+                    <h4 className="text-lg font-bold text-teal-800 mb-4 uppercase flex justify-between items-center border-b pb-2">
+                        {addMode === 'permanent' ? "Inscrire à l'année" : "Ajouter un participant"}
+                        <button onClick={() => setAddMode(null)} className="text-gray-400 hover:text-gray-600 text-xl">✕</button>
+                    </h4>
+
+                    <select autoFocus className="w-full text-base border-gray-300 border p-3 rounded-lg mb-6 outline-none" value={selectedStudentId} onChange={e => setSelectedStudentId(e.target.value)}>
+                        <option value="">-- Sélectionner --</option>
+
+                        {priorityList.length > 0 && (
+                            <optgroup label="🕒 Sur File d'Attente">
+                                {priorityList.map(s => (
+                                    <option key={s.id} value={s.id}>🕒 {s.nom} {s.prenom} ({s.absARemplacer} Cr.)</option>
+                                ))}
+                            </optgroup>
+                        )}
+
+                        <optgroup label="👥 Autres élèves">
+                            {standardList.map(s => (
+                                <option key={s.id} value={s.id}>{s.nom} {s.prenom} ({s.absARemplacer} Cr.)</option>
+                            ))}
+                        </optgroup>
+                    </select>
+
+                    <div className="flex gap-3 justify-end">
+                        <button onClick={() => setAddMode(null)} className="px-4 py-2 rounded-lg text-gray-600 hover:bg-gray-100 font-bold">Annuler</button>
+                        <button onClick={validerAjout} disabled={!selectedStudentId} className="px-6 py-2 bg-teal-600 text-white rounded-lg font-bold hover:bg-teal-700">Valider</button>
+                    </div>
                 </div>
             </div>
-        </div>
-    );
+        );
+    };
 
     if (loading) return <div className="fixed inset-0 bg-black/80 flex items-center justify-center text-white z-50">Chargement...</div>;
 
@@ -469,7 +476,7 @@ export default function GestionSeance({ groupe, date, onClose, onEdit }) {
 
             <div className="bg-white rounded-2xl shadow-2xl w-full max-w-5xl overflow-hidden flex flex-col max-h-[95vh] relative">
 
-                {/* HEADER AVEC BOUTONS D'ACTION */}
+                {/* HEADER */}
                 <div className={`p-6 text-white flex justify-between items-start ${estAnnule ? 'bg-gray-600' : (isExceptionnel ? 'bg-purple-700' : 'bg-teal-900')}`}>
                     <div className="flex-1">
                         <div className="flex items-center gap-2">
@@ -484,55 +491,34 @@ export default function GestionSeance({ groupe, date, onClose, onEdit }) {
                             {groupe.theme && <p className="text-sm italic text-yellow-200 mt-1 border-l-2 border-yellow-200 pl-2">Thème : "{groupe.theme}"</p>}
                         </div>
 
-                        {/* --- ZONE D'ACTIONS MODIFICATION / ANNULATION --- */}
                         <div className="flex gap-2 mt-4 flex-wrap">
-                            {/* On affiche le bouton Modifier pour TOUT LE MONDE (plus de condition isExceptionnel) */}
                             {onEdit && (
-                                <button
-                                    onClick={() => onEdit(groupe)}
-                                    className="bg-white text-purple-800 px-3 py-1.5 rounded-lg text-xs font-bold shadow-md hover:bg-gray-100 transition flex items-center gap-2"
-                                >
-                                    ✏️ Modifier (Horaires, Places...)
+                                <button onClick={() => onEdit(groupe)} className="bg-white text-purple-800 px-3 py-1.5 rounded-lg text-xs font-bold shadow-md hover:bg-gray-100 transition flex items-center gap-2">
+                                    ✏️ Modifier
                                 </button>
                             )}
-
-                            {/* Cas Standard : Annuler juste cette date */}
                             {!isExceptionnel && !estAnnule && (
-                                <button
-                                    onClick={handleAnnulerUnique}
-                                    className="bg-red-500/80 hover:bg-red-500 text-white px-3 py-1.5 rounded-lg text-xs font-bold shadow-md transition flex items-center gap-2 border border-red-400"
-                                >
-                                    🚫 Annuler cette séance (Une fois)
+                                <button onClick={handleAnnulerUnique} className="bg-red-500/80 hover:bg-red-500 text-white px-3 py-1.5 rounded-lg text-xs font-bold shadow-md transition flex items-center gap-2 border border-red-400">
+                                    🚫 Annuler cette séance
                                 </button>
                             )}
-
-                            {/* Cas Standard Annulé : Rétablir */}
                             {!isExceptionnel && estAnnule && (
-                                <button
-                                    onClick={handleRetablir}
-                                    className="bg-green-600 hover:bg-green-500 text-white px-3 py-1.5 rounded-lg text-xs font-bold shadow-md transition flex items-center gap-2"
-                                >
+                                <button onClick={handleRetablir} className="bg-green-600 hover:bg-green-500 text-white px-3 py-1.5 rounded-lg text-xs font-bold shadow-md transition flex items-center gap-2">
                                     ✅ Rétablir la séance
                                 </button>
                             )}
                         </div>
                     </div>
-
                     <button onClick={onClose} className="bg-white/20 hover:bg-white/40 rounded-full w-10 h-10 flex items-center justify-center font-bold">✕</button>
                 </div>
 
-                {/* CONTENU */}
+                {/* CONTENU PRINCIPAL */}
                 <div className="flex-1 overflow-y-auto p-6 bg-gray-100 relative">
-
-                    {/* MASQUE SI ANNULÉ */}
                     {estAnnule && (
                         <div className="absolute inset-0 bg-white/60 z-10 flex items-center justify-center backdrop-blur-sm">
                             <div className="bg-white p-6 rounded-xl shadow-2xl text-center border-2 border-red-100">
                                 <h3 className="text-xl font-bold text-gray-800 mb-2">Séance Annulée</h3>
-                                <p className="text-gray-500 mb-4 text-sm">Ce créneau a été annulé exceptionnellement pour cette date.</p>
-                                <button onClick={handleRetablir} className="bg-teal-600 text-white px-4 py-2 rounded-lg font-bold hover:bg-teal-700">
-                                    Rétablir la séance
-                                </button>
+                                <button onClick={handleRetablir} className="bg-teal-600 text-white px-4 py-2 rounded-lg font-bold hover:bg-teal-700">Rétablir</button>
                             </div>
                         </div>
                     )}
@@ -546,7 +532,7 @@ export default function GestionSeance({ groupe, date, onClose, onEdit }) {
                         </div>
                     )}
 
-                    {/* ... (Affichage des Grilles SlotsRender, etc. identique à avant) ... */}
+                    {/* GRILLE */}
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8">
                         {slotsRender.map((slot, index) => {
                             if (slot.type === 'titulaire') {
@@ -565,7 +551,7 @@ export default function GestionSeance({ groupe, date, onClose, onEdit }) {
                                                     <button onClick={() => toggleStatus(eleve.id)} className={`text-xs px-3 py-1 rounded font-bold border transition ${isPresent ? 'bg-teal-50 text-teal-700 border-teal-200' : 'bg-white text-red-500 border-red-200 shadow-sm'}`}>
                                                         {isPresent ? 'Présent' : 'Absent'}
                                                     </button>
-                                                    <button onClick={() => desinscrireTitulaire(eleve)} className="text-gray-300 hover:text-red-500 ml-2 p-1" title="Désinscrire">🗑️</button>
+                                                    <button onClick={() => desinscrireTitulaire(eleve)} className="text-gray-300 hover:text-red-500 ml-2 p-1">🗑️</button>
                                                 </div>
                                             </div>
                                             {!isPresent && !replacement && (
@@ -619,11 +605,11 @@ export default function GestionSeance({ groupe, date, onClose, onEdit }) {
                         })}
                     </div>
 
+                    {/* SURNOMBRE */}
                     {overflowGuests.length > 0 && (
                         <div className="mt-8 border-t pt-6 border-gray-200">
                             <h3 className="text-xs font-bold text-red-600 uppercase mb-3 flex items-center gap-2">
-                                ⚠️ Surnombre (Hors Capacité) / Orphelins
-                                <span className="bg-red-100 text-red-800 px-2 py-0.5 rounded-full text-[10px]">{overflowGuests.length}</span>
+                                ⚠️ Surnombre ({overflowGuests.length})
                             </h3>
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                                 {overflowGuests.map(eleve => (
@@ -639,6 +625,7 @@ export default function GestionSeance({ groupe, date, onClose, onEdit }) {
                         </div>
                     )}
 
+                    {/* FILE D'ATTENTE */}
                     <div className="mt-8 bg-orange-50 rounded-xl border border-orange-200 p-5 shadow-sm">
                         <div className="flex justify-between items-center mb-4">
                             <h3 className="text-xs font-bold text-orange-800 uppercase flex items-center gap-2 tracking-wide">
@@ -646,7 +633,7 @@ export default function GestionSeance({ groupe, date, onClose, onEdit }) {
                             </h3>
                             <div className="flex gap-2">
                                 <select className="text-xs border-orange-200 rounded-lg bg-white py-2 pl-2 pr-8 outline-none" value={selectedWaitlistId} onChange={e => setSelectedWaitlistId(e.target.value)}>
-                                    <option value="">+ Ajouter en attente</option>
+                                    <option value="">+ Ajouter à la liste d'attente</option>
                                     {allStudents
                                         .filter(s => !inscrits.find(i => i.id === s.id) && !invites.find(i => i.id === s.id) && !waitingList.find(w => w.id === s.id))
                                         .map(s => <option key={s.id} value={s.id}>{s.prenom} {s.nom}</option>)
@@ -660,7 +647,18 @@ export default function GestionSeance({ groupe, date, onClose, onEdit }) {
                                 <div key={eleve.id} className="bg-white p-3 rounded-lg border border-orange-100 flex justify-between items-center shadow-sm">
                                     <span className="text-sm text-gray-800 font-medium">{eleve.prenom} {eleve.nom}</span>
                                     <div className="flex gap-2">
-                                        <button onClick={() => promouvoirWaiting(eleve)} className="text-[10px] bg-teal-100 text-teal-800 px-3 py-1.5 rounded font-bold hover:bg-teal-200 border border-teal-200 transition">PROMOUVOIR</button>
+                                        {/* Bouton INTÉGRER : Visible si places réelles dispo */}
+                                        {realFreeSlots > 0 && (
+                                            <button onClick={() => integrerDepuisFileAttente(eleve)} className="text-[10px] bg-green-100 text-green-800 px-3 py-1.5 rounded font-bold hover:bg-green-200 border border-green-200 transition flex items-center gap-1">
+                                                📥 REMPLACER
+                                            </button>
+                                        )}
+
+                                        {/* Bouton FORCER (Surnombre) */}
+                                        <button onClick={() => forcerDepuisFileAttente(eleve)} className="text-[10px] bg-teal-50 text-teal-800 px-3 py-1.5 rounded font-bold hover:bg-teal-100 border border-teal-200 transition">
+                                            {realFreeSlots > 0 ? "SURNOMBRE" : "SURNOMBRE"}
+                                        </button>
+
                                         <button onClick={() => supprimerDuWaitingList(eleve.id)} className="text-gray-400 hover:text-red-500 w-8 flex items-center justify-center hover:bg-red-50 rounded">✕</button>
                                     </div>
                                 </div>
@@ -670,18 +668,11 @@ export default function GestionSeance({ groupe, date, onClose, onEdit }) {
                     </div>
                 </div>
 
-                {/* FOOTER AVEC BOUTON SUPPRIMER DÉFINITIF */}
+                {/* FOOTER */}
                 <div className="p-5 bg-white border-t flex justify-between items-center gap-4 z-40">
-
-                    {/* BOUTON SUPPRIMER TOTAL (Danger Zone) */}
-                    <button
-                        onClick={handleSupprimerDefinitif}
-                        className="text-gray-300 hover:text-red-600 p-2 text-sm font-bold transition flex items-center gap-1"
-                        title="Supprimer définitivement ce créneau"
-                    >
+                    <button onClick={handleSupprimerDefinitif} className="text-gray-300 hover:text-red-600 p-2 text-sm font-bold transition flex items-center gap-1">
                         🗑️ Supprimer tout
                     </button>
-
                     <div className="flex gap-4">
                         <button onClick={onClose} className="px-5 py-2.5 text-gray-500 font-bold hover:bg-gray-100 rounded-lg transition">Fermer</button>
                         {!estAnnule && <button onClick={sauvegarder} className="bg-teal-700 text-white px-8 py-2.5 rounded-lg font-bold hover:bg-teal-800 shadow-lg transform active:scale-95 transition">Enregistrer</button>}

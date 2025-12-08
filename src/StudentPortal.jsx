@@ -132,10 +132,11 @@ export default function StudentPortal() {
             const tousLesCreneaux = [...groupesDuJour, ...ajoutsDuJour];
 
             tousLesCreneaux.forEach(groupe => {
-                // Gestion Annulation
+                let estAnnule = false;
+
+                // Gestion Annulation (MODIFIÉ : On ne fait plus 'return', on marque juste estAnnule = true)
                 if (!groupe.isExceptionnel) {
-                    const estAnnule = exceptions.some(ex => ex.groupeId === groupe.id && ex.date === dateStr && ex.type === "annulation");
-                    if (estAnnule) return;
+                    estAnnule = exceptions.some(ex => ex.groupeId === groupe.id && ex.date === dateStr && ex.type === "annulation");
                 }
 
                 const seanceId = groupe.isExceptionnel ? groupe.id : `${dateStr}_${groupe.id}`;
@@ -185,7 +186,8 @@ export default function StudentPortal() {
                     participantsDetails,
                     waitingListDetails,
                     donneesGlobales,
-                    isExceptionnel: !!groupe.isExceptionnel
+                    isExceptionnel: !!groupe.isExceptionnel,
+                    estAnnule: estAnnule // On passe l'info à la vue
                 });
             });
         }
@@ -197,7 +199,6 @@ export default function StudentPortal() {
     // --- ACTIONS (Refresh) ---
     const refreshData = () => {
         setSelectedSession(null);
-        // Petit délai pour laisser Firestore se mettre à jour
         setTimeout(() => {
             getDoc(doc(db, "eleves", student.id)).then(snap => {
                 setStudent({ id: snap.id, ...snap.data() });
@@ -275,6 +276,19 @@ export default function StudentPortal() {
                                 <h3 className="font-bold text-gray-500 mb-2 uppercase text-xs">{JOURS[dateJour.getDay()]} {dateJour.getDate()}</h3>
                                 <div className="space-y-2">
                                     {sessions.map(sess => {
+                                        // GESTION AFFICHAGE ANNULÉ MOBILE
+                                        if (sess.estAnnule) {
+                                            return (
+                                                <div key={sess.seanceId} className="p-3 rounded-lg border border-gray-200 bg-gray-100 opacity-75 flex justify-between items-center">
+                                                    <div>
+                                                        <div className="font-bold text-gray-500 line-through decoration-gray-400">{sess.groupe.nom}</div>
+                                                        <div className="text-xs font-mono text-gray-400">{sess.groupe.heureDebut}</div>
+                                                    </div>
+                                                    <span className="text-xs font-black uppercase text-red-500 border border-red-200 px-2 py-1 rounded bg-white">ANNULÉ</span>
+                                                </div>
+                                            );
+                                        }
+
                                         let bg = "bg-white border-gray-200";
                                         let centerText = null;
 
@@ -345,8 +359,24 @@ export default function StudentPortal() {
 
                                     {sessions.map(sess => {
                                         const stylePos = getCardStyle(sess.groupe.heureDebut, sess.groupe.duree);
-                                        const isFull = sess.placesRestantes <= 0;
 
+                                        // --- GESTION AFFICHAGE ANNULÉ DESKTOP ---
+                                        if (sess.estAnnule) {
+                                            return (
+                                                <div
+                                                    key={sess.seanceId}
+                                                    className="absolute left-1 right-1 rounded-md p-2 overflow-hidden flex flex-col justify-center items-center z-20 bg-gray-100 border border-gray-300 opacity-80 cursor-not-allowed"
+                                                    style={stylePos}
+                                                >
+                                                    <div className="text-xs font-bold text-gray-400 line-through decoration-gray-400 mb-1">{sess.groupe.nom}</div>
+                                                    <div className="bg-white border border-red-200 text-red-500 font-black text-xs px-2 py-1 rounded shadow-sm transform -rotate-6">
+                                                        ANNULÉ
+                                                    </div>
+                                                </div>
+                                            );
+                                        }
+
+                                        const isFull = sess.placesRestantes <= 0;
                                         let containerClass = "hover:shadow-md cursor-pointer border-l-4 transition-all opacity-95 hover:opacity-100 flex flex-col justify-between";
                                         let titleColor = "text-gray-700";
                                         let topBadge = null;
@@ -404,13 +434,10 @@ export default function StudentPortal() {
                                         return (
                                             <div
                                                 key={sess.seanceId}
-                                                // AJOUT Z-20 pour être sûr que c'est cliquable au dessus des lignes
                                                 className={`absolute left-1 right-1 rounded-md p-2 overflow-hidden flex flex-col justify-between z-20 ${containerClass}`}
                                                 style={stylePos}
-                                                // AJOUT pour déboguer si le clic ne marche toujours pas
                                                 onClick={(e) => {
                                                     e.stopPropagation();
-                                                    console.log("Clic session", sess);
                                                     setSelectedSession(sess);
                                                 }}
                                             >

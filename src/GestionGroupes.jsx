@@ -163,7 +163,7 @@ export default function GestionGroupes({ onClose, onUpdate, initialEditId }) {
                     {/* COLONNE GAUCHE : FORMULAIRE */}
                     <div className="md:w-1/3 bg-white p-6 rounded-xl shadow-sm border border-gray-100 h-fit">
                         <h3 className="font-bold text-lg text-teal-800 mb-4 border-b pb-2">
-                            {editingId ? "Modifier le cours" : "Créer un cours"}
+                            {editingId ? "Modification des cours" : "Créer un cours"}
                         </h3>
                         <form onSubmit={handleSubmit} className="space-y-4">
                             <div>
@@ -173,7 +173,7 @@ export default function GestionGroupes({ onClose, onUpdate, initialEditId }) {
 
                             {/* --- NOUVEAUX CHAMPS DATES --- */}
                             <div className="bg-teal-50 p-3 rounded-lg border border-teal-100">
-                                <label className="block text-xs font-bold text-teal-800 mb-2 uppercase tracking-wide">📅 Période (Saison)</label>
+                                <label className="block text-xs font-bold text-teal-800 mb-2 uppercase tracking-wide">📅 Période</label>
                                 <div className="space-y-3">
                                     <div>
                                         <div className="flex justify-between items-baseline mb-1">

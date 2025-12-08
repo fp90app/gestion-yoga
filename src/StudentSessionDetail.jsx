@@ -30,20 +30,18 @@ export default function StudentSessionDetail({ session, student, onClose, onUpda
         }
     };
 
-    // --- LOGIQUE D'ÉTAT ---
+    // --- PRÉPARATION DES DONNÉES ---
     const myId = student.id;
     const myStatus = attendanceData.status?.[myId];
-
-    // Suis-je titulaire de CE groupe ? (Seulement si NON exceptionnel)
     const isTitulaire = !isExceptionnel && student.enrolledGroupIds && student.enrolledGroupIds.includes(groupe.id);
     const isInWaitingList = attendanceData.waitingList?.includes(myId);
 
-    // 1. LES TITULAIRES (Seulement pour Standard)
+    // 1. Liste des Titulaires (Inscrits)
     const inscrits = !isExceptionnel
         ? allEleves.filter(e => e.enrolledGroupIds && e.enrolledGroupIds.includes(groupe.id))
         : [];
 
-    // 2. LES INVITÉS
+    // 2. Liste des Invités (Présents non titulaires)
     const guestIds = Object.keys(attendanceData.status || {}).filter(uid => {
         const s = attendanceData.status[uid];
         const isTit = inscrits.some(t => t.id === uid);
@@ -51,46 +49,25 @@ export default function StudentSessionDetail({ session, student, onClose, onUpda
     });
     const invites = guestIds.map(uid => allEleves.find(e => e.id === uid)).filter(Boolean);
 
-    // --- CALCUL DES PLACES ---
-    const titulairesAbsents = inscrits.filter(t =>
-        attendanceData.status?.[t.id] === 'absent' ||
-        attendanceData.status?.[t.id] === 'absent_announced'
-    );
+    // 3. Liens de remplacement
+    const replacementLinks = attendanceData.replacementLinks || {};
 
-    const occupiedByTitulaires = inscrits.length - titulairesAbsents.length;
-    const totalPresents = occupiedByTitulaires + invites.length;
+    // --- CALCUL DE CAPACITÉ ---
+    const capacity = typeof groupe.places === 'number' ? groupe.places : 10;
 
-    const hasWaitingList = attendanceData.waitingList && attendanceData.waitingList.length > 0;
+    // Nombre physique : Titulaires PRÉSENTS + Tous les Invités
+    const nbTitulairesPresents = inscrits.filter(t => attendanceData.status?.[t.id] === 'present').length;
+    const nbInvitesTotal = invites.length;
+    const totalPresents = nbTitulairesPresents + nbInvitesTotal;
 
-    const placesRestantes = hasWaitingList ? 0 : (groupe.places - totalPresents);
-    const isFull = placesRestantes <= 0;
+    // Est-ce physiquement complet ?
+    const isPhysicallyFull = totalPresents >= capacity;
 
-    // --- AFFICHAGE GRID ---
-    const mainList = isExceptionnel ? invites : inscrits;
-    const slotsOccupiedCount = mainList.length;
+    // --- ACTIONS DB ---
 
-    // CORRECTION VISUELLE ICI : 
-    // On force le nombre de slots vides à 0 si c'est complet ou s'il y a de l'attente
-    const emptySlotsCount = (isFull || hasWaitingList) ? 0 : Math.max(0, groupe.places - slotsOccupiedCount);
-
-    let secondaryList = [];
-    if (isExceptionnel) {
-        secondaryList = invites.slice(groupe.places);
-    } else {
-        // CORRECTION ICI : On récupère les Clés (Guest IDs) et non les Valeurs (Titulaire IDs)
-        // replacementLinks est sous la forme { GUEST_ID : TITULAIRE_ID }
-        const guestWhoAreReplacements = Object.keys(attendanceData.replacementLinks || {});
-
-        // On filtre : on garde ceux qui ne sont PAS dans la liste des clés de remplacement
-        secondaryList = invites.filter(i => !guestWhoAreReplacements.includes(i.id));
-    }
-
-    // --- ACTIONS CRÉDITS ---
     const confirmCreditAction = (actionType) => {
         const solde = student.absARemplacer || 0;
-        let cout = 0;
-        let gain = 0;
-        let message = "";
+        let cout = 0, gain = 0, message = "";
 
         if (actionType === 'book') {
             cout = 1;
@@ -105,17 +82,17 @@ export default function StudentSessionDetail({ session, student, onClose, onUpda
             cout = 1;
             message = `ANNULER ABSENCE\n\nSolde actuel : ${solde}\nCoût : ${cout}\n----------------\nNouveau solde : ${solde - cout}\n\nReprendre votre place ?`;
         }
-
         return confirm(message);
     };
 
-    // --- ACTIONS DB ---
     const toggleMyPresence = async () => {
         const isAbsentNow = myStatus === 'absent' || myStatus === 'absent_announced';
-        if (isAbsentNow && isFull) {
-            alert("❌ Impossible de reprendre votre place : le cours est complet.");
+
+        if (isAbsentNow && isPhysicallyFull) {
+            alert("❌ Impossible de reprendre votre place : le cours est COMPLET (tous les tapis sont occupés).");
             return;
         }
+
         if (!confirmCreditAction(isAbsentNow ? 'cancel_absence' : 'signal_absence')) return;
 
         setProcessing(true);
@@ -124,9 +101,11 @@ export default function StudentSessionDetail({ session, student, onClose, onUpda
         const userRef = doc(db, "eleves", myId);
 
         if (isAbsentNow) {
+            // Je reviens
             batch.set(ref, { status: { [myId]: deleteField() } }, { merge: true });
             batch.update(userRef, { absARemplacer: increment(-1) });
         } else {
+            // Je m'absente
             batch.set(ref, {
                 date: dateStr,
                 groupeId: groupe.id,
@@ -144,15 +123,16 @@ export default function StudentSessionDetail({ session, student, onClose, onUpda
         setProcessing(false);
     };
 
-    const bookSpot = async (targetId = null) => {
+    const bookSpot = async () => {
         if (!confirmCreditAction('book')) return;
-
         setProcessing(true);
+
         const batch = writeBatch(db);
         const ref = doc(db, "attendance", seanceId);
         const userRef = doc(db, "eleves", myId);
 
-        const updateData = {
+        // Préparation de la mise à jour
+        let updateData = {
             date: dateStr,
             groupeId: groupe.id,
             nomGroupe: groupe.nom,
@@ -161,10 +141,28 @@ export default function StudentSessionDetail({ session, student, onClose, onUpda
             updatedAt: serverTimestamp()
         };
 
-        if (targetId) {
-            updateData.replacementLinks = { [myId]: targetId };
+        // 1. LOGIQUE AUTOMATIQUE DE REMPLACEMENT
+        // On cherche un titulaire absent qui n'est PAS DÉJÀ remplacé
+        if (!isExceptionnel) {
+            const titulaireAbsentDispo = inscrits.find(t => {
+                const status = attendanceData.status?.[t.id];
+                const estAbsent = status === 'absent' || status === 'absent_announced';
+
+                // Vérifier si son ID est déjà utilisé comme "valeur" dans replacementLinks
+                const estDejaRemplace = Object.values(replacementLinks).includes(t.id);
+
+                return estAbsent && !estDejaRemplace;
+            });
+
+            if (titulaireAbsentDispo) {
+                updateData.replacementLinks = {
+                    ...replacementLinks,
+                    [myId]: titulaireAbsentDispo.id
+                };
+            }
         }
 
+        // 2. Gestion File d'attente
         if (isInWaitingList) {
             updateData.waitingList = arrayRemove(myId);
         }
@@ -181,7 +179,6 @@ export default function StudentSessionDetail({ session, student, onClose, onUpda
     const cancelBooking = async () => {
         if (!confirmCreditAction('cancel_booking')) return;
         setProcessing(true);
-
         const batch = writeBatch(db);
         const ref = doc(db, "attendance", seanceId);
         const userRef = doc(db, "eleves", myId);
@@ -206,7 +203,7 @@ export default function StudentSessionDetail({ session, student, onClose, onUpda
         const batch = writeBatch(db);
 
         if (isInWaitingList) {
-            if (confirm("Quitter la file d'attente ?")) {
+            if (confirm("Quitter la liste d'attente ?")) {
                 batch.update(ref, { waitingList: arrayRemove(myId) });
             } else { setProcessing(false); return; }
         } else {
@@ -224,205 +221,279 @@ export default function StudentSessionDetail({ session, student, onClose, onUpda
         setProcessing(false);
     };
 
-    if (loading) return <div className="p-10 text-center">Chargement...</div>;
+    // --- CONSTRUCTION DE L'AFFICHAGE ---
+
+    // Invités liés (Remplaçants)
+    const linkedGuestIds = Object.keys(replacementLinks).filter(guestId => {
+        const titulaireId = replacementLinks[guestId];
+        return inscrits.some(t => t.id === titulaireId);
+    });
+
+    // Invités libres (Non liés)
+    const freeGuests = invites.filter(i => !linkedGuestIds.includes(i.id));
+
+    const slotsRender = [];
+
+    // A. Les Titulaires
+    if (!isExceptionnel) {
+        inscrits.forEach(titulaire => {
+            slotsRender.push({ type: 'titulaire', student: titulaire });
+        });
+    }
+
+    // B. Les Invités sur places libres
+    const baseOccupied = isExceptionnel ? 0 : inscrits.length;
+    const slotsAvailableForGuests = Math.max(0, capacity - baseOccupied);
+
+    for (let i = 0; i < slotsAvailableForGuests; i++) {
+        if (i < freeGuests.length) {
+            slotsRender.push({ type: 'guest_in_slot', student: freeGuests[i] });
+        } else {
+            slotsRender.push({ type: 'empty' });
+        }
+    }
+
+    // C. Surnombre
+    const overflowGuests = freeGuests.slice(slotsAvailableForGuests);
+
+
+    if (loading) return <div className="fixed inset-0 bg-black/80 flex items-center justify-center text-white z-50">Chargement...</div>;
 
     return (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4" onClick={onClose}>
-            <div className="bg-white w-full max-w-lg rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[85vh]" onClick={e => e.stopPropagation()}>
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-5xl overflow-hidden flex flex-col max-h-[95vh] relative" onClick={e => e.stopPropagation()}>
 
-                {/* Header */}
+                {/* HEADER */}
                 <div className={`p-6 text-white flex justify-between items-start ${isExceptionnel ? 'bg-purple-800' : 'bg-teal-900'}`}>
                     <div>
                         <div className="flex items-center gap-2">
-                            <h3 className="text-2xl font-playfair font-bold">{groupe.nom}</h3>
-                            {isExceptionnel && <span className="text-[10px] bg-white/20 px-2 rounded uppercase font-bold border border-white/20">Unique</span>}
+                            <h2 className="text-2xl font-bold font-playfair">{groupe.nom}</h2>
+                            {isExceptionnel && <span className="text-[10px] bg-white/20 px-2 py-0.5 rounded uppercase font-bold tracking-wider">Séance Unique</span>}
                         </div>
-                        <p className="text-white/80 text-sm mt-1 capitalize">
-                            {dateObj.toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' })} • {groupe.heureDebut}
-                        </p>
-                        {groupe.theme && (
-                            <div className="mt-3 bg-white/10 p-2.5 rounded-lg border border-white/20 text-sm italic text-yellow-50 shadow-sm">
-                                <span className="mr-1">ℹ️</span> {groupe.theme}
-                            </div>
-                        )}
+                        <div className="mt-1">
+                            <p className="text-white/90 text-sm capitalize">
+                                {dateObj.toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' })} • {groupe.heureDebut}
+                            </p>
+                            {groupe.theme && <p className="text-sm italic text-yellow-200 mt-1 border-l-2 border-yellow-200 pl-2">Thème : "{groupe.theme}"</p>}
+                        </div>
                     </div>
-                    <button onClick={onClose} className="bg-white/20 hover:bg-white/40 text-white rounded-full w-10 h-10 flex items-center justify-center font-bold text-xl transition">✕</button>
+                    <button onClick={onClose} className="bg-white/20 hover:bg-white/40 rounded-full w-10 h-10 flex items-center justify-center font-bold">✕</button>
                 </div>
 
-                {/* Jauge */}
-                <div className="bg-gray-50 border-b p-4">
-                    <div className="flex justify-between items-end mb-1">
-                        <span className="text-xs font-bold text-gray-500 uppercase">Remplissage</span>
-                        <span className={`text-sm font-bold ${isFull ? 'text-red-600' : 'text-teal-700'}`}>
-                            {totalPresents} / {groupe.places} places
+                {/* CONTENU */}
+                <div className="flex-1 overflow-y-auto p-6 bg-gray-100">
+
+                    {/* Jauge */}
+                    <div className="flex justify-between items-center mb-6 px-2">
+                        <span className="text-xs font-bold uppercase text-gray-500 tracking-wider">Remplissage</span>
+                        <span className={`text-sm font-bold px-4 py-1.5 rounded-full shadow-sm border ${isPhysicallyFull ? 'bg-red-100 text-red-700 border-red-200' : 'bg-white text-teal-800 border-teal-100'}`}>
+                            {totalPresents} / {capacity} places
                         </span>
                     </div>
-                    <div className="w-full bg-gray-200 rounded-full h-2">
-                        <div className={`h-2 rounded-full transition-all duration-500 ${isFull ? 'bg-red-500' : 'bg-teal-500'}`} style={{ width: `${Math.min((totalPresents / groupe.places) * 100, 100)}%` }}></div>
-                    </div>
-                </div>
 
-                {/* Body */}
-                <div className="flex-1 overflow-y-auto p-4 bg-gray-100 space-y-4">
-
-                    {/* LISTE PRINCIPALE */}
-                    <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-                        <div className="bg-teal-50 px-4 py-2 border-b border-teal-100 text-xs font-bold text-teal-800 uppercase tracking-wider">
-                            {isExceptionnel ? "Participants Inscrits" : "Groupe Régulier"}
-                        </div>
-                        <div className="divide-y divide-gray-50">
-                            {/* BOUCLE LISTE PRINCIPALE */}
-                            {mainList.map(eleve => {
-                                const status = attendanceData.status?.[eleve.id];
-                                const isAbsent = !isExceptionnel && (status === 'absent' || status === 'absent_announced');
+                    {/* GRILLE DES PARTICIPANTS */}
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8">
+                        {slotsRender.map((slot, index) => {
+                            // --- CAS 1 : TITULAIRE ---
+                            if (slot.type === 'titulaire') {
+                                const eleve = slot.student;
                                 const isMe = eleve.id === myId;
+                                const status = attendanceData.status?.[eleve.id];
+                                const isPresent = status === 'present' || status === undefined;
 
-                                const replacementId = Object.keys(attendanceData.replacementLinks || {}).find(k => attendanceData.replacementLinks[k] === eleve.id);
+                                const replacementId = Object.keys(replacementLinks).find(k => replacementLinks[k] === eleve.id);
                                 const replacement = replacementId ? invites.find(i => i.id === replacementId) : null;
 
+                                let borderClass = isPresent ? 'border-teal-500' : 'border-red-300 bg-red-50/20';
+                                if (isMe) borderClass += " ring-2 ring-teal-200";
+
                                 return (
-                                    <div key={eleve.id} className="relative">
-                                        <div className={`p-3 flex items-center justify-between ${isAbsent ? 'bg-gray-50/80' : ''}`}>
-                                            <div className="flex items-center gap-3">
-                                                <div className={`w-2.5 h-2.5 rounded-full ${isAbsent ? 'border-2 border-gray-300' : 'bg-teal-500'}`}></div>
-                                                <div className={isAbsent ? 'opacity-50' : ''}>
-                                                    <div className={`text-sm font-bold ${isMe ? 'text-teal-700' : 'text-gray-800'}`}>
-                                                        {eleve.prenom} {eleve.nom.charAt(0)}. {isMe && "(Moi)"}
-                                                    </div>
-                                                    {isAbsent && <div className="text-[10px] text-gray-400">Absent</div>}
+                                    <div key={eleve.id} className={`relative p-4 rounded-xl border-l-4 shadow-sm bg-white transition-all ${borderClass}`}>
+                                        <div className="flex justify-between items-start">
+                                            <div>
+                                                <div className="font-bold text-gray-800 text-lg flex items-center gap-2">
+                                                    {eleve.prenom} {eleve.nom.charAt(0)}.
+                                                    {isMe && <span className="bg-teal-100 text-teal-800 text-[10px] px-1.5 py-0.5 rounded uppercase">Moi</span>}
                                                 </div>
+                                                <div className="text-[10px] uppercase font-bold text-gray-400 mb-2 tracking-wide">Titulaire</div>
+
+                                                {/* Actions titulaire (Moi) */}
+                                                {isMe && !processing && (
+                                                    <button
+                                                        onClick={toggleMyPresence}
+                                                        className={`text-xs px-3 py-1 rounded font-bold border transition ${isPresent ? 'bg-teal-50 text-teal-700 border-teal-200 hover:bg-teal-100' : 'bg-white text-red-500 border-red-200 shadow-sm hover:bg-red-50'}`}
+                                                    >
+                                                        {isPresent ? "Je m'absente" : "Je viens (Reprendre place)"}
+                                                    </button>
+                                                )}
+
+                                                {/* Actions Invité (Pas Moi) */}
+                                                {!isMe && (
+                                                    <div className="text-right">
+                                                        <span className={`block text-xs font-bold ${isPresent ? 'text-teal-600' : 'text-red-400'}`}>
+                                                            {isPresent ? 'Présent' : 'Absent'}
+                                                        </span>
+                                                        {/* BOUTON CLÉ : Prendre la place d'un absent */}
+                                                        {!isPresent && !replacement && !myStatus && !processing && !isTitulaire && (
+                                                            <button
+                                                                onClick={(e) => { e.stopPropagation(); bookSpot(); }}
+                                                                className="mt-1.5 bg-purple-600 text-white text-[10px] px-3 py-1.5 rounded-lg font-bold hover:bg-purple-700 shadow-md transition-transform active:scale-95 flex items-center gap-1"
+                                                            >
+                                                                <span>⚡ Remplacer</span>
+                                                            </button>
+                                                        )}
+                                                    </div>
+                                                )}
                                             </div>
-
-                                            {/* ACTIONS */}
-                                            {isTitulaire && isMe && !processing && (
-                                                <button
-                                                    onClick={toggleMyPresence}
-                                                    disabled={isAbsent && isFull}
-                                                    className={`text-xs font-bold px-3 py-1.5 rounded border transition ${isAbsent
-                                                        ? (isFull ? 'bg-gray-100 text-gray-400 cursor-not-allowed' : 'bg-teal-50 text-teal-700 border-teal-200')
-                                                        : 'bg-white text-red-500 border-red-100'
-                                                        }`}
-                                                >
-                                                    {isAbsent ? (isFull ? "Complet" : "Je viens") : "S'absenter"}
-                                                </button>
-                                            )}
-
-                                            {isExceptionnel && isMe && !processing && (
-                                                <button onClick={cancelBooking} className="text-[10px] bg-red-50 text-red-500 border border-red-100 px-2 py-1 rounded hover:bg-red-100">
-                                                    Annuler
-                                                </button>
-                                            )}
-
-                                            {!isExceptionnel && !isTitulaire && !isMe && isAbsent && !replacement && !myStatus && !processing && (
-                                                <button onClick={() => bookSpot(eleve.id)} className="text-[10px] bg-purple-600 text-white px-3 py-1.5 rounded font-bold hover:bg-purple-700 animate-pulse shadow-sm">
-                                                    Prendre cette place
-                                                </button>
-                                            )}
                                         </div>
 
-                                        {isAbsent && replacement && (
-                                            <div className="ml-8 mb-2 flex items-center gap-2 text-xs text-purple-700 bg-purple-50 p-1.5 rounded-r border-l-2 border-purple-300">
-                                                <span>↳</span>
-                                                <span className="font-bold">{replacement.prenom} {replacement.nom.charAt(0)}.</span>
-                                                <span className="text-[9px] opacity-70 uppercase">Remplaçant</span>
-                                                {replacement.id === myId && <span className="text-[9px] bg-purple-200 px-1 rounded ml-auto">C'est moi</span>}
+                                        {replacement && (
+                                            <div className="mt-3 pt-3 border-t border-purple-100 flex justify-between items-center text-purple-700">
+                                                <div className="flex items-center gap-2">
+                                                    <span className="text-xl">↳</span>
+                                                    <div>
+                                                        <span className="font-bold text-sm block">
+                                                            {replacement.prenom} {replacement.nom.charAt(0)}.
+                                                            {replacement.id === myId && " (Moi)"}
+                                                        </span>
+                                                        <span className="text-[9px] bg-purple-100 px-1.5 py-0.5 rounded uppercase font-bold">Remplaçant</span>
+                                                    </div>
+                                                </div>
+
+                                                {/* BOUTON ANNULER REMPLACEMENT (C'est Moi le remplaçant) */}
+                                                {replacement.id === myId && !processing && (
+                                                    <button
+                                                        onClick={(e) => { e.stopPropagation(); cancelBooking(); }}
+                                                        className="text-xs bg-white text-red-500 border border-red-200 px-2 py-1 rounded hover:bg-red-50 font-bold"
+                                                    >
+                                                        Annuler
+                                                    </button>
+                                                )}
                                             </div>
                                         )}
                                     </div>
                                 );
-                            })}
+                            }
 
-                            {/* CASES VIDES */}
-                            {Array.from({ length: emptySlotsCount }).map((_, idx) => (
-                                <div key={`empty-${idx}`} className="p-3 flex items-center justify-between bg-gray-50 border-dashed border-gray-200">
-                                    <div className="flex items-center gap-3 opacity-60">
-                                        <div className="w-2.5 h-2.5 rounded-full border-2 border-gray-300 border-dashed"></div>
+                            // --- CAS 2 : INVITÉ SUR PLACE LIBRE ---
+                            if (slot.type === 'guest_in_slot') {
+                                const eleve = slot.student;
+                                const isMe = eleve.id === myId;
+
+                                return (
+                                    <div key={eleve.id} className={`p-4 rounded-xl border-l-4 border-purple-500 bg-purple-50 shadow-sm flex justify-between items-center ${isMe ? 'ring-2 ring-purple-200' : ''}`}>
                                         <div>
-                                            <div className="text-sm font-bold text-gray-400 italic">Place disponible</div>
+                                            <div className="font-bold text-gray-800 text-lg">
+                                                {eleve.prenom} {eleve.nom.charAt(0)}.
+                                                {isMe && <span className="ml-2 bg-purple-200 text-purple-800 text-[10px] px-1.5 py-0.5 rounded uppercase">Moi</span>}
+                                            </div>
+                                            <div className="text-[10px] uppercase font-bold text-purple-600 tracking-wide">
+                                                {isExceptionnel ? "Participant" : "Invité (Ponctuel)"}
+                                            </div>
                                         </div>
+
+                                        {isMe && !processing && (
+                                            <button onClick={cancelBooking} className="text-xs bg-white border border-red-200 text-red-500 px-2 py-1 rounded hover:bg-red-50">
+                                                Annuler
+                                            </button>
+                                        )}
                                     </div>
+                                );
+                            }
+
+                            // --- CAS 3 : PLACE VIDE ---
+                            return (
+                                <div key={`empty-${index}`} className="relative p-4 rounded-xl border-2 border-dashed border-gray-300 bg-gray-50 flex flex-col justify-center items-center min-h-[100px] group hover:border-teal-400 hover:bg-white transition-all">
+                                    <div className="text-gray-400 text-xs font-bold uppercase mb-2 tracking-widest group-hover:text-teal-600">Place Libre</div>
 
                                     {!isTitulaire && !myStatus && !processing && (
                                         <button
-                                            onClick={() => bookSpot(null)}
-                                            className="text-[10px] bg-purple-600 text-white px-3 py-1.5 rounded font-bold hover:bg-purple-700 shadow-sm"
+                                            onClick={bookSpot}
+                                            className="px-6 py-2 bg-white border border-gray-300 rounded-lg text-sm font-bold text-gray-600 hover:text-white hover:bg-teal-600 hover:border-teal-600 shadow-sm transition"
                                         >
                                             Réserver
                                         </button>
                                     )}
                                 </div>
-                            ))}
-                        </div>
+                            );
+                        })}
                     </div>
 
-                    {/* LISTE SECONDAIRE */}
-                    {secondaryList.length > 0 && (
-                        <div className="bg-purple-50 rounded-xl shadow-sm border border-purple-100 overflow-hidden">
-                            <div className="px-4 py-2 border-b border-purple-100 text-xs font-bold text-purple-800 uppercase tracking-wider">
-                                {isExceptionnel ? "Surnombre (Hors Capacité)" : "Autres Participants"}
-                            </div>
-                            <div className="p-3 space-y-2">
-                                {secondaryList.map(eleve => (
-                                    <div key={eleve.id} className="flex justify-between items-center text-sm">
-                                        <div className="flex items-center gap-2">
-                                            <span>✅</span>
-                                            <span className="font-medium text-gray-700">{eleve.prenom} {eleve.nom.charAt(0)}.</span>
-                                            {eleve.id === myId && <span className="text-[9px] bg-purple-200 text-purple-800 px-1 rounded font-bold ml-2">(Moi)</span>}
+                    {/* SURNOMBRE */}
+                    {overflowGuests.length > 0 && (
+                        <div className="mt-8 border-t pt-6 border-gray-200">
+                            <h3 className="text-xs font-bold text-red-600 uppercase mb-3 flex items-center gap-2">
+                                ⚠️ Surnombre (Hors Capacité)
+                            </h3>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                {overflowGuests.map(eleve => (
+                                    <div key={eleve.id} className="p-3 rounded-lg border border-red-200 bg-red-50 flex justify-between items-center shadow-sm">
+                                        <div className="flex items-center gap-3">
+                                            <span className="text-red-500 font-bold text-xl">+</span>
+                                            <span className="text-sm font-bold text-gray-800">
+                                                {eleve.prenom} {eleve.nom.charAt(0)}.
+                                                {eleve.id === myId && " (Moi)"}
+                                            </span>
                                         </div>
+                                        {eleve.id === myId && (
+                                            <button onClick={cancelBooking} className="text-xs bg-white border border-red-200 text-red-500 px-2 py-1 rounded">
+                                                Annuler
+                                            </button>
+                                        )}
                                     </div>
                                 ))}
                             </div>
                         </div>
                     )}
 
-                    {/* LISTE D'ATTENTE */}
-                    {attendanceData.waitingList && attendanceData.waitingList.length > 0 && (
-                        <div className="bg-orange-50 rounded-xl border border-orange-200 p-3">
-                            <div className="text-xs font-bold text-orange-800 uppercase mb-2 flex justify-between">
-                                <span>File d'attente</span>
-                                <span>{attendanceData.waitingList.length} en attente</span>
-                            </div>
-                            <div className="flex flex-wrap gap-1">
-                                {attendanceData.waitingList.map(uid => {
-                                    const el = allEleves.find(e => e.id === uid);
-                                    if (!el) return null;
-                                    return (
-                                        <span key={uid} className={`text-xs px-2 py-1 rounded border ${uid === myId ? 'bg-orange-200 text-orange-900 border-orange-300 font-bold' : 'bg-white text-orange-600 border-orange-100'}`}>
-                                            {el.prenom} {el.nom.charAt(0)}.
-                                        </span>
-                                    )
-                                })}
-                            </div>
+                    {/* FILE D'ATTENTE */}
+                    <div className="mt-8 bg-orange-50 rounded-xl border border-orange-200 p-5 shadow-sm">
+                        <div className="flex justify-between items-center mb-4">
+                            <h3 className="text-xs font-bold text-orange-800 uppercase flex items-center gap-2 tracking-wide">
+                                🕒 Liste d'attente ({attendanceData.waitingList?.length || 0})
+                            </h3>
                         </div>
-                    )}
+
+                        <div className="space-y-2">
+                            {attendanceData.waitingList?.map(uid => {
+                                const eleve = allEleves.find(e => e.id === uid);
+                                if (!eleve) return null;
+                                const isMe = uid === myId;
+                                return (
+                                    <div key={uid} className={`p-3 rounded-lg border flex justify-between items-center shadow-sm ${isMe ? 'bg-orange-100 border-orange-300' : 'bg-white border-orange-100'}`}>
+                                        <span className={`text-sm font-medium ${isMe ? 'text-orange-900' : 'text-gray-800'}`}>
+                                            {eleve.prenom} {eleve.nom.charAt(0)}.
+                                            {isMe && <span className="ml-2 font-bold text-xs uppercase">(Moi)</span>}
+                                        </span>
+
+                                        {isMe && !processing && (
+                                            <button onClick={toggleWaitlist} className="text-xs text-orange-600 hover:text-red-600 hover:bg-white px-2 py-1 rounded border border-transparent hover:border-gray-200 transition">
+                                                Quitter la liste d'attente
+                                            </button>
+                                        )}
+                                    </div>
+                                )
+                            })}
+                            {(!attendanceData.waitingList || attendanceData.waitingList.length === 0) && (
+                                <p className="text-xs text-orange-300 italic text-center py-2">La liste d'attente est vide.</p>
+                            )}
+                        </div>
+
+                        {/* BOUTON REJOINDRE FILE */}
+                        {!isTitulaire && !myStatus && !isInWaitingList && isPhysicallyFull && (
+                            <div className="mt-4 pt-4 border-t border-orange-200 text-center">
+                                <button onClick={toggleWaitlist} className="w-full md:w-auto bg-orange-400 text-white px-6 py-2 rounded-lg font-bold hover:bg-orange-500 shadow-md transition">
+                                    M'ajouter à la liste d'attente
+                                </button>
+                            </div>
+                        )}
+                    </div>
 
                 </div>
 
                 {/* FOOTER */}
-                <div className="p-4 bg-white border-t">
-                    {isTitulaire ? (
-                        <p className="text-center text-xs text-gray-400">
-                            {myStatus === 'absent_announced' ? "Vous avez signalé votre absence." : "Vous êtes titulaire de ce créneau."}
-                        </p>
-                    ) : (
-                        myStatus === 'present' ? (
-                            <button onClick={cancelBooking} className="w-full py-3 bg-red-50 text-red-600 font-bold rounded-xl border border-red-200 hover:bg-red-100">
-                                Annuler ma réservation (+1 crédit)
-                            </button>
-                        ) : isInWaitingList ? (
-                            <button onClick={toggleWaitlist} className="w-full py-3 bg-white text-orange-600 font-bold rounded-xl border border-orange-200 hover:bg-orange-50">
-                                Quitter la file d'attente
-                            </button>
-                        ) : isFull ? (
-                            <button onClick={toggleWaitlist} className="w-full py-3 bg-orange-500 text-white font-bold rounded-xl hover:bg-orange-600 shadow-lg">
-                                M'inscrire sur file d'attente
-                            </button>
-                        ) : (
-                            <div className="text-center text-xs text-gray-400 italic">
-                                Sélectionnez une place disponible ci-dessus pour réserver.
-                            </div>
-                        )
-                    )}
+                <div className="p-5 bg-white border-t flex justify-end gap-4 z-40">
+                    <button onClick={onClose} className="px-5 py-2.5 text-gray-500 font-bold hover:bg-gray-100 rounded-lg transition">Fermer</button>
                 </div>
 
             </div>
