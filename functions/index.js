@@ -3,6 +3,7 @@ const admin = require("firebase-admin");
 const fetch = require("node-fetch");
 
 admin.initializeApp();
+const db = admin.firestore();
 
 const BREVO_API_KEY = require("./ma-cle");
 
@@ -11,119 +12,166 @@ exports.onPlaceLiberated = functions.region("europe-west1").firestore
     .onUpdate(async (change, context) => {
         const newData = change.after.data();
         const oldData = change.before.data();
-        const db = admin.firestore();
 
-        // -----------------------------------------------------------
-        // 1. FILTRAGE DE BASE
-        // -----------------------------------------------------------
-
-        // S'il n'y a personne en attente, inutile d'aller plus loin
+        // 1. VÉRIFICATION : Y a-t-il des gens à prévenir ?
         const waitingList = newData.waitingList || [];
         if (waitingList.length === 0) return null;
 
-        // Calcul du nombre de présents (statut "present")
-        const getCount = (data) => Object.values(data.status || {}).filter(s => s === 'present').length;
-        const newCount = getCount(newData);
-        const oldCount = getCount(oldData);
+        const groupeId = newData.groupeId;
+        const dateSeance = newData.date;
+        const seanceNom = newData.nomGroupe || "Cours";
 
-        // Si le nombre d'élèves n'a pas baissé, on n'envoie rien.
-        // CELA GÈRE TON CAS DE "RÉDUCTION DE CAPACITÉ" : 
-        // Si tu changes la capacité, 'newCount' reste égal à 'oldCount', donc ça s'arrête ici.
-        if (newCount >= oldCount) return null;
-
-        console.log(`Mouvement détecté : ${oldCount} -> ${newCount} élèves.`);
-
-        // -----------------------------------------------------------
-        // 2. VÉRIFICATIONS AVANCÉES (CAPACITÉ & ANNULATION)
-        // -----------------------------------------------------------
+        console.log(`🔍 [${seanceNom} ${dateSeance}] Analyse suite à modification...`);
 
         try {
-            // A. Récupérer la capacité du groupe
-            // On gère le cas des "ajouts" (séances uniques) et des groupes normaux
-            let capacity = 10; // Sécurité par défaut
-            let isCancelled = false;
+            // ==================================================================
+            // ÉTAPE 1 : CAPACITÉ OFFICIELLE (C)
+            // ==================================================================
+            let capacity = 0;
+            let isAjout = false;
 
-            // Si c'est un groupe standard (l'ID ne commence pas par "ajout_")
-            if (!newData.groupeId.startsWith("ajout_")) {
-                const groupeDoc = await db.collection("groupes").doc(newData.groupeId).get();
-                if (groupeDoc.exists) {
-                    capacity = groupeDoc.data().places || 10;
+            // A. Séance Unique (Ajout)
+            const exceptionRef = await db.collection("exceptions").doc(groupeId).get();
+            if (exceptionRef.exists && exceptionRef.data().type === 'ajout') {
+                isAjout = true;
+                capacity = parseInt(exceptionRef.data().newSessionData?.places || 0);
+            } else {
+                // B. Cours Récurrent
+                const groupRef = await db.collection("groupes").doc(groupeId).get();
+                if (!groupRef.exists) {
+                    console.error("⚠️ Groupe introuvable en DB.");
+                    return null;
                 }
+                capacity = parseInt(groupRef.data().places || 0);
 
-                // B. Vérifier si le cours est ANNULÉ ce jour-là
-                // On cherche une exception de type "annulation" pour ce groupe et cette date
-                const exceptionsQuery = await db.collection("exceptions")
-                    .where("groupeId", "==", newData.groupeId)
-                    .where("date", "==", newData.date) // Format YYYY-MM-DD stocké dans attendance
-                    .where("type", "==", "annulation")
+                // C. Exception de date
+                const exQuery = await db.collection("exceptions")
+                    .where("groupeId", "==", groupeId)
+                    .where("date", "==", dateSeance)
                     .get();
 
-                if (!exceptionsQuery.empty) isCancelled = true;
-            } else {
-                // C'est une séance unique (ajout), la capacité est souvent dans l'ID ou stockée ailleurs
-                // Pour simplifier ici, on considère que si c'est un ajout, on vérifie juste les places
-                // Note : Tu devrais stocker 'places' dans le document attendance pour faciliter ça !
+                if (!exQuery.empty) {
+                    const exData = exQuery.docs[0].data();
+                    if (exData.type === 'annulation') return null;
+                    if (exData.newSessionData?.places !== undefined) {
+                        capacity = parseInt(exData.newSessionData.places);
+                        console.log(`ℹ️ Capacité modifiée exceptionnellement : ${capacity}`);
+                    }
+                }
             }
 
-            // CRITÈRE D'ARRÊT 1 : Le cours est annulé
-            if (isCancelled) {
-                console.log("ALERTE STOPPÉE : Le cours est marqué comme annulé.");
+            // ==================================================================
+            // ÉTAPE 2 : COMPTAGE PRÉCIS DES HUMAINS
+            // ==================================================================
+
+            // Récupération des titulaires (Inscrits à l'année)
+            let titulairesIds = [];
+            if (!isAjout) {
+                const titulairesSnap = await db.collection("eleves")
+                    .where("enrolledGroupIds", "array-contains", groupeId)
+                    .get();
+                titulairesIds = titulairesSnap.docs.map(d => d.id);
+            }
+
+            // Fonction de comptage avec LOGS DÉTAILLÉS
+            const countOccupants = (attendanceData, label) => {
+                const statusMap = attendanceData.status || {};
+                let count = 0;
+                let details = [];
+
+                if (isAjout) {
+                    count = Object.values(statusMap).filter(s => s === 'present').length;
+                } else {
+                    // 1. Titulaires
+                    titulairesIds.forEach(tid => {
+                        const s = statusMap[tid];
+                        // Un titulaire compte SAUF s'il est marqué absent
+                        const isAbsent = (s === 'absent' || s === 'absent_announced');
+                        if (!isAbsent) {
+                            count++;
+                        } else {
+                            // On note qui est absent pour le debug
+                            details.push(`Titulaire Absent: ${tid}`);
+                        }
+                    });
+
+                    // 2. Invités
+                    Object.keys(statusMap).forEach(uid => {
+                        if (statusMap[uid] === 'present' && !titulairesIds.includes(uid)) {
+                            count++;
+                            details.push(`Invité: ${uid}`);
+                        }
+                    });
+                }
+
+                // Afficher les détails s'il y a des absents/invités (pour comprendre le calcul)
+                if (details.length > 0) console.log(`📋 Détails ${label}:`, details);
+                return count;
+            };
+
+            const countBefore = countOccupants(oldData, "AVANT");
+            const countAfter = countOccupants(newData, "APRÈS");
+
+            console.log(`📊 Bilan Mathématique : Avant=${countBefore} -> Après=${countAfter} (Capacité=${capacity})`);
+
+            // ==================================================================
+            // ÉTAPE 3 : DÉCISION STRICTE
+            // ==================================================================
+
+            // Si c'était déjà libre avant, on ne fait rien (évite les doublons)
+            if (countBefore < capacity) {
+                console.log("🛑 Le cours était DÉJÀ libre avant la modif. Pas de mail.");
                 return null;
             }
 
-            // CRITÈRE D'ARRÊT 2 : Le cours est toujours complet (Surbooking résorbé mais pas de place vide)
-            if (newCount >= capacity) {
-                console.log(`ALERTE STOPPÉE : Cours toujours complet malgré le désistement (${newCount}/${capacity}).`);
+            // Si c'est TOUJOURS complet (ou surnombre), on ne fait rien
+            if (countAfter >= capacity) {
+                console.log("🛑 Le cours est TOUJOURS complet. Pas de mail.");
                 return null;
             }
 
-        } catch (error) {
-            console.error("Erreur lors des vérifications de sécurité :", error);
-            return null; // En cas d'erreur technique, mieux vaut ne pas spammer
-        }
+            // Si on arrive ici, c'est que : AVANT >= CAPACITÉ  et  APRÈS < CAPACITÉ
+            console.log("✅ DÉCLENCHEMENT : Une place vient vraiment de se libérer.");
 
-        // -----------------------------------------------------------
-        // 3. ENVOI DES EMAILS
-        // -----------------------------------------------------------
-
-        console.log(`✅ Place confirmée libre (${newCount} présents pour ${capacity} places). Envoi aux ${waitingList.length} personnes.`);
-
-        const emails = [];
-        for (const uid of waitingList) {
-            const docEleve = await db.collection("eleves").doc(uid).get();
-            if (docEleve.exists && docEleve.data().email) {
-                emails.push({ email: docEleve.data().email, name: docEleve.data().prenom });
+            // ==================================================================
+            // ÉTAPE 4 : ENVOI MAIL
+            // ==================================================================
+            const emails = [];
+            for (const uid of waitingList) {
+                const docEleve = await db.collection("eleves").doc(uid).get();
+                if (docEleve.exists && docEleve.data().email) {
+                    emails.push({ email: docEleve.data().email, name: docEleve.data().prenom });
+                }
             }
-        }
 
-        if (emails.length === 0) return null;
+            if (emails.length === 0) return null;
 
-        // Préparation Mail Brevo
-        const emailData = {
-            sender: { name: "Yoga Sandrine", email: "putod.sandrine@gmail.com" }, // Ton email validé
-            to: emails,
-            subject: "Une place s'est libérée ! 🧘‍♀️",
-            htmlContent: `
-                <div style="font-family: Arial, sans-serif; color: #333; max-width: 600px; margin: 0 auto;">
-                    <h2 style="color: #0d9488;">Une place vous attend !</h2>
-                    <p>Bonjour,</p>
-                    <p>Suite à un désistement, une place vient de se libérer pour le cours :</p>
-                    <div style="background-color: #f0fdfa; padding: 15px; border-left: 4px solid #0d9488; margin: 20px 0;">
-                        <strong>${newData.nomGroupe}</strong><br>
-                        Date : ${newData.date}
+            const placesRestantes = capacity - countAfter;
+
+            const emailData = {
+                sender: { name: "Yoga Sandrine", email: "putod.sandrine@gmail.com" },
+                to: emails,
+                subject: "Une place s'est libérée ! 🧘‍♀️",
+                htmlContent: `
+                    <div style="font-family: Arial, sans-serif; color: #333; max-width: 600px; margin: 0 auto;">
+                        <h2 style="color: #0d9488;">Une place vous attend !</h2>
+                        <p>Bonjour,</p>
+                        <p>Une place vient de se libérer pour le cours :</p>
+                        <div style="background-color: #f0fdfa; padding: 15px; border-left: 4px solid #0d9488; margin: 20px 0;">
+                            <strong>${seanceNom}</strong><br>
+                            Date : ${dateSeance}<br>
+                            <small>Places disponibles : ${placesRestantes}</small>
+                        </div>
+                        <p style="font-weight: bold; color: #c2410c;">Premier arrivé, premier servi !</p>
+                        <div style="text-align: center; margin-top: 30px;">
+                            <a href="https://ton-site-yoga.web.app" style="background-color: #0d9488; color: white; padding: 12px 25px; text-decoration: none; border-radius: 8px; font-weight: bold;">
+                                Réserver maintenant
+                            </a>
+                        </div>
                     </div>
-                    <p>Les personnes sur liste d'attente sont prévenues en même temps.</p>
-                    <p style="font-weight: bold;">Premier arrivé, premier servi !</p>
-                    <div style="text-align: center; margin-top: 30px;">
-                        <a href="https://ton-site-yoga.web.app" style="background-color: #0d9488; color: white; padding: 12px 25px; text-decoration: none; border-radius: 8px; font-weight: bold;">
-                            Réserver ma place maintenant
-                        </a>
-                    </div>
-                </div>
-            `
-        };
+                `
+            };
 
-        try {
             await fetch("https://api.brevo.com/v3/smtp/email", {
                 method: "POST",
                 headers: {
@@ -133,9 +181,10 @@ exports.onPlaceLiberated = functions.region("europe-west1").firestore
                 },
                 body: JSON.stringify(emailData)
             });
-            console.log("Emails envoyés avec succès !");
-        } catch (err) {
-            console.error("Erreur API Brevo:", err);
+            console.log(`📨 Mails envoyés à ${emails.length} personnes.`);
+
+        } catch (error) {
+            console.error("❌ Erreur critique :", error);
         }
 
         return null;

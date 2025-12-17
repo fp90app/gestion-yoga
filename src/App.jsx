@@ -1,12 +1,14 @@
 import { useState, useEffect } from 'react';
-import { Routes, Route, Navigate } from 'react-router-dom'; // <--- NOUVEAUX IMPORTS
+import { Routes, Route, Navigate } from 'react-router-dom';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { auth } from './firebase';
+import { Toaster } from 'react-hot-toast'; // <--- NOUVEAU : Pour les notifications
 
 import Planning from './Planning';
 import Annuaire from './annuaire.jsx';
 import Login from './Login';
-import StudentPortal from './StudentPortal'; // <--- IMPORT
+import StudentPortal from './StudentPortal';
+import Home from './Home'; // <--- NOUVEAU : Votre page d'accueil créée à l'étape 2
 
 // --- COMPOSANT WRAPPER POUR PROTÉGER LA ROUTE ADMIN ---
 const AdminRoute = ({ children }) => {
@@ -34,22 +36,38 @@ const AdminRoute = ({ children }) => {
 // --- APP PRINCIPALE AVEC ROUTING ---
 function App() {
   return (
-    <Routes>
-      {/* Route Publique : Vue Élève */}
-      <Route path="/" element={<StudentPortal />} />
+    <>
+      {/* Configuration globale des notifications (Toasts) */}
+      <Toaster
+        position="top-center"
+        toastOptions={{
+          duration: 3000,
+          style: { background: '#333', color: '#fff' }
+        }}
+      />
 
-      {/* Route Admin Sécurisée */}
-      <Route path="/admin" element={
-        <AdminRoute>
-          <AdminDashboard />
-        </AdminRoute>
-      } />
-    </Routes>
+      <Routes>
+        {/* Route 1 : Page d'Accueil Publique (Nouvelle) */}
+        <Route path="/" element={<Home />} />
+
+        {/* Route 2 : Le Portail Élève (Déplacé sur /portal) */}
+        <Route path="/portal" element={<StudentPortal />} />
+
+        {/* Route 3 : Admin Sécurisée */}
+        <Route path="/admin" element={
+          <AdminRoute>
+            <AdminDashboard />
+          </AdminRoute>
+        } />
+
+        {/* Sécurité : Redirection vers l'accueil si l'URL est inconnue */}
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+    </>
   );
 }
 
-// J'ai extrait ton ancien contenu de App.jsx dans ce composant "AdminDashboard"
-// pour que le fichier reste propre.
+// --- DASHBOARD ADMIN (Votre code existant conservé) ---
 function AdminDashboard() {
   const [ongletActif, setOngletActif] = useState('planning');
 
