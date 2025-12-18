@@ -107,6 +107,7 @@ export default function GestionSeance({ groupe, date, onClose, onEdit }) {
                 : tous.filter(e => e.enrolledGroupIds && e.enrolledGroupIds.includes(groupe.id));
 
             // B. Identification des INVITÉS
+            // On prend ceux marqués 'present' qui ne sont PAS titulaires
             const presentIds = Object.keys(savedStatus).filter(k => savedStatus[k] === 'present');
             const guestIds = presentIds.filter(pid => !listeInscrits.some(i => i.id === pid));
 
@@ -125,13 +126,12 @@ export default function GestionSeance({ groupe, date, onClose, onEdit }) {
             setGuestOrigins(savedGuestOrigins);
 
             // Initialisation des statuts locaux
+            // Pour un titulaire, s'il n'a pas de statut sauvegardé, il est "undefined" (donc présent par défaut dans l'affichage)
             const finalStatus = { ...savedStatus };
-            listeInscrits.forEach(e => {
-                if (!finalStatus[e.id]) finalStatus[e.id] = 'present';
-            });
-            listeInvites.forEach(e => {
-                if (!finalStatus[e.id]) finalStatus[e.id] = 'present';
-            });
+
+            // On s'assure que tout le monde a un statut pour l'UI, même si c'est implicite
+            // Note: On ne force pas 'present' dans la DB ici, juste dans l'état local pour l'affichage si besoin
+            // Mais pour le calcul, on utilisera la logique "Pas absent = Présent"
 
             setStatuses(finalStatus);
             setInitialStatus(JSON.parse(JSON.stringify(finalStatus)));
@@ -192,17 +192,26 @@ export default function GestionSeance({ groupe, date, onClose, onEdit }) {
     // --- LOGIQUE PRESENCE ---
     const toggleStatus = (eleveId) => {
         const currentStatus = statuses[eleveId];
-        const newStatus = currentStatus === 'present' ? 'absent' : 'present';
+        // Si undefined ou present -> devient absent
+        // Si absent -> devient present
+        const isCurrentlyAbsent = currentStatus === 'absent' || currentStatus === 'absent_announced';
+        const newStatus = isCurrentlyAbsent ? 'present' : 'absent';
 
         if (newStatus === 'present') {
-            const nbTitulairesPresents = inscrits.filter(i => statuses[i.id] === 'present').length;
-            const nbInvites = invites.length;
-            const totalOccupation = nbTitulairesPresents + nbInvites;
+            // Vérification capacité (Simplifiée pour Admin : alerte seulement)
+            // On recalcule le total avec la modif
+            const nbPresents = inscrits.filter(i => {
+                if (i.id === eleveId) return true;
+                const s = statuses[i.id];
+                return s !== 'absent' && s !== 'absent_announced';
+            }).length + invites.length;
+
             const placesTotales = typeof groupe.places === 'number' ? groupe.places : 10;
 
-            if (totalOccupation + 1 > placesTotales) {
+            if (nbPresents > placesTotales) {
                 if (!confirm(`⚠️ Cours complet (${placesTotales} places).\nAjouter en SURNOMBRE ?`)) return;
             }
+
             // Si on revient, on casse le lien de remplacement s'il existait
             const guestIdLinked = Object.keys(replacementLinks).find(key => replacementLinks[key] === eleveId);
             if (guestIdLinked) {
@@ -411,6 +420,18 @@ export default function GestionSeance({ groupe, date, onClose, onEdit }) {
 
     // --- RENDER ---
     const capacity = typeof groupe.places === 'number' ? groupe.places : 10;
+
+    // CORRECTION DU CALCUL DES PRÉSENTS
+    // Un titulaire est présent s'il n'est PAS absent (donc 'present' ou undefined)
+    const nbTitulairesPresents = inscrits.filter(i => {
+        const s = statuses[i.id];
+        return s !== 'absent' && s !== 'absent_announced';
+    }).length;
+
+    const nbInvites = invites.length;
+    const totalPresents = nbTitulairesPresents + nbInvites;
+    const realFreeSlots = capacity - totalPresents;
+
     const validTitulaireIds = inscrits.map(t => t.id);
     const linkedGuestIds = Object.keys(replacementLinks).filter(guestId => {
         return validTitulaireIds.includes(replacementLinks[guestId]);
@@ -429,8 +450,6 @@ export default function GestionSeance({ groupe, date, onClose, onEdit }) {
         else slotsRender.push({ type: 'empty' });
     }
     const overflowGuests = freeGuests.slice(slotsAvailableForGuests);
-    const totalPresents = inscrits.filter(i => statuses[i.id] === 'present').length + invites.length;
-    const realFreeSlots = capacity - totalPresents;
 
     // --- MODALE SÉLECTION ÉLÈVE ---
     const RenderSelector = () => {
@@ -531,7 +550,9 @@ export default function GestionSeance({ groupe, date, onClose, onEdit }) {
                         {slotsRender.map((slot, index) => {
                             if (slot.type === 'titulaire') {
                                 const eleve = slot.student;
-                                const isPresent = statuses[eleve.id] === 'present';
+                                const status = statuses[eleve.id];
+                                // CORRECTION ICI : Si status est undefined, on considère présent
+                                const isPresent = status === 'present' || status === undefined;
                                 const replacementId = Object.keys(replacementLinks).find(k => replacementLinks[k] === eleve.id);
                                 const replacement = replacementId ? invites.find(i => i.id === replacementId) : null;
 

@@ -10,7 +10,7 @@ export default function StudentSessionDetail({ session, student, onClose, onUpda
     const [processing, setProcessing] = useState(false);
     const [confirmConfig, setConfirmConfig] = useState(null);
 
-    const { groupe, dateObj, seanceId, dateStr, isExceptionnel, isPast } = session; // <--- On récupère isPast
+    const { groupe, dateObj, seanceId, dateStr, isExceptionnel, isPast } = session;
     const allEleves = session.donneesGlobales.allEleves;
 
     useEffect(() => {
@@ -51,7 +51,15 @@ export default function StudentSessionDetail({ session, student, onClose, onUpda
     const replacementLinks = attendanceData.replacementLinks || {};
 
     const capacity = typeof groupe.places === 'number' ? groupe.places : 10;
-    const nbTitulairesPresents = inscrits.filter(t => attendanceData.status?.[t.id] === 'present').length;
+
+    // --- CORRECTION DU CALCUL DES PRÉSENTS (BUG FIX) ---
+    // Avant : on comptait seulement ceux avec status === 'present'
+    // Maintenant : Pour les titulaires, on compte ceux qui NE SONT PAS 'absent'
+    const nbTitulairesPresents = inscrits.filter(t => {
+        const s = attendanceData.status?.[t.id];
+        return s !== 'absent' && s !== 'absent_announced';
+    }).length;
+
     const nbInvitesTotal = invites.length;
     const totalPresents = nbTitulairesPresents + nbInvitesTotal;
     const isPhysicallyFull = totalPresents >= capacity;
@@ -172,7 +180,7 @@ export default function StudentSessionDetail({ session, student, onClose, onUpda
     // --- ACTIONS ---
 
     const toggleMyPresence = () => {
-        if (isPast) return; // Sécurité double
+        if (isPast) return;
         const isAbsentNow = myStatus === 'absent' || myStatus === 'absent_announced';
         if (isAbsentNow && isPhysicallyFull) return toast.error("Cours complet.");
 
@@ -354,7 +362,7 @@ export default function StudentSessionDetail({ session, student, onClose, onUpda
                                 const eleve = slot.student;
                                 const isMe = eleve.id === myId;
                                 const status = attendanceData.status?.[eleve.id];
-                                const isPresent = status === 'present' || status === undefined;
+                                const isPresent = status === 'present' || status === undefined; // CORRECTION LOGIQUE
                                 const isAbsent = !isPresent;
                                 const replacementId = Object.keys(replacementLinks).find(k => replacementLinks[k] === eleve.id);
                                 const replacement = replacementId ? invites.find(i => i.id === replacementId) : null;
@@ -371,7 +379,7 @@ export default function StudentSessionDetail({ session, student, onClose, onUpda
                                                     {isMe && <span className="bg-teal-100 text-teal-800 text-[10px] px-1.5 py-0.5 rounded uppercase">Moi</span>}
                                                 </div>
                                                 <div className="text-[10px] uppercase font-bold text-gray-400 mb-2 tracking-wide">Titulaire</div>
-                                                {isMe && !processing && !isPast && ( // <--- BLOQUÉ SI PASSÉ
+                                                {isMe && !processing && !isPast && (
                                                     <div className="group relative inline-block">
                                                         <button onClick={toggleMyPresence} disabled={cannotReclaim} className={`text-xs px-3 py-1 rounded font-bold border transition ${cannotReclaim ? 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed' : (isPresent ? 'bg-teal-50 text-teal-700 border-teal-200 hover:bg-teal-100' : 'bg-white text-red-500 border-red-200 shadow-sm hover:bg-red-50')}`}>
                                                             {cannotReclaim ? "Place prise" : (isPresent ? "Je m'absente" : "Je viens")}
@@ -381,7 +389,7 @@ export default function StudentSessionDetail({ session, student, onClose, onUpda
                                                 {!isMe && (
                                                     <div className="text-right">
                                                         <span className={`block text-xs font-bold ${isPresent ? 'text-teal-600' : 'text-red-400'}`}>{isPresent ? 'Présent' : 'Absent'}</span>
-                                                        {!isPresent && !replacement && !myStatus && !processing && !isTitulaire && !isPast && ( // <--- BLOQUÉ SI PASSÉ
+                                                        {!isPresent && !replacement && !myStatus && !processing && !isTitulaire && !isPast && (
                                                             <button onClick={(e) => { e.stopPropagation(); bookSpot(); }} className="mt-1.5 bg-purple-600 text-white text-[10px] px-3 py-1.5 rounded-lg font-bold hover:bg-purple-700 shadow-md flex items-center gap-1"><span>⚡ Remplacer</span></button>
                                                         )}
                                                     </div>
@@ -446,6 +454,7 @@ export default function StudentSessionDetail({ session, student, onClose, onUpda
                             })}
                             {(!attendanceData.waitingList || attendanceData.waitingList.length === 0) && <p className="text-xs text-orange-300 italic text-center py-2">Vide.</p>}
                         </div>
+                        {/* BOUTON LISTE D'ATTENTE : S'affiche si complet et pas déjà inscrit */}
                         {!isTitulaire && !myStatus && !isInWaitingList && isPhysicallyFull && !isPast && (
                             <div className="mt-4 pt-4 border-t border-orange-200 text-center">
                                 <button onClick={toggleWaitlist} className="w-full md:w-auto bg-orange-400 text-white px-6 py-2 rounded-lg font-bold hover:bg-orange-500 shadow-md transition">M'ajouter à la liste d'attente</button>
