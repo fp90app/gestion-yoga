@@ -2,13 +2,13 @@ import { useState, useEffect } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { auth } from './firebase';
-import { Toaster } from 'react-hot-toast'; // <--- NOUVEAU : Pour les notifications
+import { Toaster } from 'react-hot-toast';
 
 import Planning from './Planning';
 import Annuaire from './annuaire.jsx';
 import Login from './Login';
 import StudentPortal from './StudentPortal';
-import Home from './Home'; // <--- NOUVEAU : Votre page d'accueil créée à l'étape 2
+import Home from './Home';
 
 // --- COMPOSANT WRAPPER POUR PROTÉGER LA ROUTE ADMIN ---
 const AdminRoute = ({ children }) => {
@@ -47,11 +47,11 @@ function App() {
       />
 
       <Routes>
-        {/* Route 1 : Page d'Accueil Publique (Nouvelle) */}
+        {/* Route 1 : Page d'Accueil Publique */}
         <Route path="/" element={<Home />} />
 
-        {/* Route 2 : Le Portail Élève (Déplacé sur /portal) */}
-        <Route path="/portal" element={<StudentPortal />} />
+        {/* Route 2 : Le Portail Élève (Renommé en /student pour correspondre au bouton de l'accueil) */}
+        <Route path="/student" element={<StudentPortal />} />
 
         {/* Route 3 : Admin Sécurisée */}
         <Route path="/admin" element={
@@ -67,7 +67,7 @@ function App() {
   );
 }
 
-// --- DASHBOARD ADMIN (Votre code existant conservé) ---
+// --- DASHBOARD ADMIN ---
 function AdminDashboard() {
   const [ongletActif, setOngletActif] = useState('planning');
 

@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { db } from './firebase';
 import { collection, addDoc, getDocs, updateDoc, deleteDoc, doc, orderBy, query, serverTimestamp } from 'firebase/firestore';
 import toast from 'react-hot-toast';
-import ConfirmModal from './components/ConfirmModal'; // <--- IMPORT MODALE
+import ConfirmModal from './components/ConfirmModal';
 
 export default function Annuaire() {
     const [eleves, setEleves] = useState([]);
@@ -16,6 +16,9 @@ export default function Annuaire() {
     const [editCredits, setEditCredits] = useState(0);
     const [formData, setFormData] = useState({ nom: '', prenom: '', email: '' });
     const [eleveEnEdition, setEleveEnEdition] = useState(null);
+    const [activeTab, setActiveTab] = useState('details'); // 'details' ou 'history'
+    const [history, setHistory] = useState([]);
+    const [loadingHistory, setLoadingHistory] = useState(false);
 
     // Modale de confirmation
     const [confirmConfig, setConfirmConfig] = useState(null);
@@ -55,6 +58,33 @@ export default function Annuaire() {
             toast.error("Erreur de chargement");
         } finally {
             setLoading(false);
+        }
+    };
+
+    const fetchHistory = async (eleveId) => {
+        setLoadingHistory(true);
+        try {
+            const q = query(collection(db, "eleves", eleveId, "history"), orderBy("date", "desc"));
+            const snapshot = await getDocs(q);
+            setHistory(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+        } catch (error) {
+            console.error("Erreur historique:", error);
+            toast.error("Impossible de charger l'historique");
+        } finally {
+            setLoadingHistory(false);
+        }
+    };
+
+    const deleteHistoryItem = async (historyId) => {
+        if (!confirm("Supprimer cette ligne d'historique ? Cela n'impactera pas le solde actuel, c'est juste visuel.")) return;
+
+        try {
+            await deleteDoc(doc(db, "eleves", eleveEnEdition.id, "history", historyId));
+            setHistory(prev => prev.filter(h => h.id !== historyId));
+            toast.success("Ligne supprimée");
+        } catch (e) {
+            console.error(e);
+            toast.error("Erreur suppression");
         }
     };
 
@@ -111,6 +141,9 @@ export default function Annuaire() {
     const openEditModal = (eleve) => {
         setEleveEnEdition(eleve);
         setEditCredits(eleve.absARemplacer || 0);
+        setActiveTab('details'); // Reset tab
+        // On charge l'historique en arrière-plan au cas où
+        fetchHistory(eleve.id);
     };
 
     const toggleGroupePourEleve = (groupeId) => {
@@ -295,68 +328,136 @@ export default function Annuaire() {
                 <div className="fixed inset-0 bg-black/70 flex items-center justify-center p-4 z-50 backdrop-blur-sm" onClick={() => setEleveEnEdition(null)}>
                     <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[90vh]" onClick={e => e.stopPropagation()}>
                         <div className="bg-teal-700 p-6 text-white flex justify-between items-center relative">
-                            <h3 className="text-2xl font-bold font-playfair">Édition Élève</h3>
+                            <h3 className="text-2xl font-bold font-playfair">Édition : {eleveEnEdition.prenom} {eleveEnEdition.nom}</h3>
                             <button onClick={() => setEleveEnEdition(null)} className="bg-black/20 hover:bg-black/40 text-white rounded-full w-8 h-8 flex items-center justify-center transition absolute top-6 right-6">✕</button>
                         </div>
 
-                        <div className="p-6 overflow-y-auto bg-gray-50 flex-1 space-y-6">
-                            {/* COORDONNÉES */}
-                            <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100">
-                                <h4 className="text-sm font-bold text-gray-500 uppercase tracking-wider mb-3">👤 Infos & Crédits</h4>
-                                <div className="grid grid-cols-2 gap-4 mb-4">
-                                    <div>
-                                        <label className="block text-xs font-bold text-gray-700 mb-1">Nom</label>
-                                        <input type="text" value={eleveEnEdition.nom} onChange={(e) => setEleveEnEdition({ ...eleveEnEdition, nom: e.target.value })} className="w-full border p-2 rounded text-gray-800 uppercase focus:ring-2 focus:ring-teal-500 outline-none" />
-                                    </div>
-                                    <div>
-                                        <label className="block text-xs font-bold text-gray-700 mb-1">Prénom</label>
-                                        <input type="text" value={eleveEnEdition.prenom} onChange={(e) => setEleveEnEdition({ ...eleveEnEdition, prenom: e.target.value })} className="w-full border p-2 rounded text-gray-800 focus:ring-2 focus:ring-teal-500 outline-none" />
-                                    </div>
-                                </div>
-                                <div className="grid grid-cols-2 gap-4">
-                                    <div>
-                                        <label className="block text-xs font-bold text-gray-700 mb-1">Email</label>
-                                        <input type="email" value={eleveEnEdition.email || ''} onChange={(e) => setEleveEnEdition({ ...eleveEnEdition, email: e.target.value })} className="w-full border p-2 rounded text-gray-800 focus:ring-2 focus:ring-teal-500 outline-none" />
-                                    </div>
-                                    <div>
-                                        <label className="block text-xs font-bold text-gray-700 mb-1">Solde Crédits</label>
-                                        <div className="relative">
-                                            <input type="number" value={editCredits} onChange={(e) => setEditCredits(e.target.value)} className="w-full border p-2 rounded text-gray-800 font-bold bg-purple-50 text-purple-700 focus:ring-2 focus:ring-purple-500 outline-none pl-10" />
-                                            <span className="absolute left-3 top-2 text-purple-400">🎫</span>
-                                        </div>
-                                        <p className="text-[10px] text-gray-400 mt-1 italic">Toute modification ici sera tracée dans l'historique.</p>
-                                    </div>
-                                </div>
-                            </div>
-
-                            {/* GROUPES SELECTION */}
-                            <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100">
-                                <h4 className="text-sm font-bold text-gray-500 uppercase tracking-wider mb-3">📅 Inscriptions Récurrentes</h4>
-                                <p className="text-xs text-gray-500 mb-3">Cochez les groupes où l'élève vient chaque semaine.</p>
-
-                                <div className="grid md:grid-cols-2 gap-3">
-                                    {groupes.filter(g => isGroupActive(g)).map(groupe => {
-                                        const estInscrit = eleveEnEdition.enrolledGroupIds?.includes(groupe.id);
-                                        return (
-                                            <label key={groupe.id} className={`flex items-center p-3 rounded-lg border cursor-pointer transition select-none ${estInscrit ? 'bg-teal-50 border-teal-500' : 'border-gray-100 hover:bg-gray-50'}`}>
-                                                <input type="checkbox" className="w-5 h-5 text-teal-600 rounded focus:ring-teal-500 border-gray-300" checked={estInscrit || false} onChange={() => toggleGroupePourEleve(groupe.id)} />
-                                                <div className="ml-3">
-                                                    <span className={`block font-bold ${estInscrit ? 'text-teal-900' : 'text-gray-600'}`}>{groupe.nom}</span>
-                                                    <span className="text-xs text-gray-400 uppercase font-semibold">{JOURS[groupe.jour]} • {groupe.heureDebut}</span>
-                                                </div>
-                                            </label>
-                                        );
-                                    })}
-                                </div>
-                            </div>
-                        </div>
-
-                        <div className="p-4 bg-white border-t flex justify-end gap-3">
-                            <button onClick={() => setEleveEnEdition(null)} className="px-4 py-2 text-gray-600 font-bold hover:bg-gray-100 rounded-lg transition">Annuler</button>
-                            <button onClick={sauvegarderEdition} className="px-8 py-3 bg-teal-800 text-white font-bold rounded-lg hover:bg-teal-900 shadow-xl transition transform active:scale-95 border-b-4 border-teal-950 active:border-b-0 active:mt-1">
-                                Enregistrer
+                        {/* ONGLETS */}
+                        <div className="flex border-b border-gray-200">
+                            <button
+                                onClick={() => setActiveTab('details')}
+                                className={`flex-1 py-3 font-bold text-sm ${activeTab === 'details' ? 'text-teal-700 border-b-2 border-teal-700 bg-teal-50' : 'text-gray-500 hover:bg-gray-50'}`}
+                            >
+                                👤 Détails
+                            </button>
+                            <button
+                                onClick={() => setActiveTab('history')}
+                                className={`flex-1 py-3 font-bold text-sm ${activeTab === 'history' ? 'text-teal-700 border-b-2 border-teal-700 bg-teal-50' : 'text-gray-500 hover:bg-gray-50'}`}
+                            >
+                                📜 Historique
                             </button>
                         </div>
+
+                        <div className="p-6 overflow-y-auto bg-gray-50 flex-1 space-y-6">
+
+                            {/* CONTENU ONGLET DÉTAILS */}
+                            {activeTab === 'details' && (
+                                <>
+                                    {/* COORDONNÉES */}
+                                    <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100">
+                                        <h4 className="text-sm font-bold text-gray-500 uppercase tracking-wider mb-3">👤 Infos & Crédits</h4>
+                                        <div className="grid grid-cols-2 gap-4 mb-4">
+                                            <div>
+                                                <label className="block text-xs font-bold text-gray-700 mb-1">Nom</label>
+                                                <input type="text" value={eleveEnEdition.nom} onChange={(e) => setEleveEnEdition({ ...eleveEnEdition, nom: e.target.value })} className="w-full border p-2 rounded text-gray-800 uppercase focus:ring-2 focus:ring-teal-500 outline-none" />
+                                            </div>
+                                            <div>
+                                                <label className="block text-xs font-bold text-gray-700 mb-1">Prénom</label>
+                                                <input type="text" value={eleveEnEdition.prenom} onChange={(e) => setEleveEnEdition({ ...eleveEnEdition, prenom: e.target.value })} className="w-full border p-2 rounded text-gray-800 focus:ring-2 focus:ring-teal-500 outline-none" />
+                                            </div>
+                                        </div>
+                                        <div className="grid grid-cols-2 gap-4">
+                                            <div>
+                                                <label className="block text-xs font-bold text-gray-700 mb-1">Email</label>
+                                                <input type="email" value={eleveEnEdition.email || ''} onChange={(e) => setEleveEnEdition({ ...eleveEnEdition, email: e.target.value })} className="w-full border p-2 rounded text-gray-800 focus:ring-2 focus:ring-teal-500 outline-none" />
+                                            </div>
+                                            <div>
+                                                <label className="block text-xs font-bold text-gray-700 mb-1">Solde Crédits</label>
+                                                <div className="relative">
+                                                    <input type="number" value={editCredits} onChange={(e) => setEditCredits(e.target.value)} className="w-full border p-2 rounded text-gray-800 font-bold bg-purple-50 text-purple-700 focus:ring-2 focus:ring-purple-500 outline-none pl-10" />
+                                                    <span className="absolute left-3 top-2 text-purple-400">🎫</span>
+                                                </div>
+                                                <p className="text-[10px] text-gray-400 mt-1 italic">Toute modification ici sera tracée dans l'historique.</p>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    {/* GROUPES SELECTION */}
+                                    <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100">
+                                        <h4 className="text-sm font-bold text-gray-500 uppercase tracking-wider mb-3">📅 Inscriptions Récurrentes</h4>
+                                        <p className="text-xs text-gray-500 mb-3">Cochez les groupes où l'élève vient chaque semaine.</p>
+
+                                        <div className="grid md:grid-cols-2 gap-3">
+                                            {groupes.filter(g => isGroupActive(g)).map(groupe => {
+                                                const estInscrit = eleveEnEdition.enrolledGroupIds?.includes(groupe.id);
+                                                return (
+                                                    <label key={groupe.id} className={`flex items-center p-3 rounded-lg border cursor-pointer transition select-none ${estInscrit ? 'bg-teal-50 border-teal-500' : 'border-gray-100 hover:bg-gray-50'}`}>
+                                                        <input type="checkbox" className="w-5 h-5 text-teal-600 rounded focus:ring-teal-500 border-gray-300" checked={estInscrit || false} onChange={() => toggleGroupePourEleve(groupe.id)} />
+                                                        <div className="ml-3">
+                                                            <span className={`block font-bold ${estInscrit ? 'text-teal-900' : 'text-gray-600'}`}>{groupe.nom}</span>
+                                                            <span className="text-xs text-gray-400 uppercase font-semibold">{JOURS[groupe.jour]} • {groupe.heureDebut}</span>
+                                                        </div>
+                                                    </label>
+                                                );
+                                            })}
+                                        </div>
+                                    </div>
+                                </>
+                            )}
+
+                            {/* CONTENU ONGLET HISTORIQUE */}
+                            {activeTab === 'history' && (
+                                <div className="space-y-4">
+                                    {loadingHistory ? (
+                                        <div className="text-center py-10 text-gray-400">Chargement...</div>
+                                    ) : history.length === 0 ? (
+                                        <div className="text-center py-10 text-gray-400 italic">Aucun historique disponible.</div>
+                                    ) : (
+                                        history.map(item => {
+                                            const dateItem = item.date ? item.date.toDate() : new Date();
+                                            const isPositive = item.delta > 0;
+                                            return (
+                                                <div key={item.id} className="bg-white p-3 rounded-lg border border-gray-200 flex justify-between items-center shadow-sm">
+                                                    <div>
+                                                        <div className="flex items-center gap-2">
+                                                            <span className={`text-xs font-bold px-2 py-0.5 rounded ${isPositive ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                                                                {isPositive ? '+' : ''}{item.delta}
+                                                            </span>
+                                                            <span className="font-bold text-gray-700 text-sm">{item.motif}</span>
+                                                        </div>
+                                                        <div className="text-xs text-gray-400 mt-1">
+                                                            Le {dateItem.toLocaleDateString('fr-FR')} à {dateItem.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
+                                                            {item.seanceDate && ` • Séance du ${item.seanceDate}`}
+                                                        </div>
+                                                    </div>
+                                                    <button
+                                                        onClick={() => deleteHistoryItem(item.id)}
+                                                        className="text-gray-300 hover:text-red-500 p-2 rounded hover:bg-red-50 transition"
+                                                        title="Supprimer cette ligne (correction)"
+                                                    >
+                                                        🗑️
+                                                    </button>
+                                                </div>
+                                            );
+                                        })
+                                    )}
+                                </div>
+                            )}
+                        </div>
+
+                        {activeTab === 'details' && (
+                            <div className="p-4 bg-white border-t flex justify-end gap-3">
+                                <button onClick={() => setEleveEnEdition(null)} className="px-4 py-2 text-gray-600 font-bold hover:bg-gray-100 rounded-lg transition">Annuler</button>
+                                <button onClick={sauvegarderEdition} className="px-8 py-3 bg-teal-800 text-white font-bold rounded-lg hover:bg-teal-900 shadow-xl transition transform active:scale-95 border-b-4 border-teal-950 active:border-b-0 active:mt-1">
+                                    Enregistrer
+                                </button>
+                            </div>
+                        )}
+                        {activeTab === 'history' && (
+                            <div className="p-4 bg-white border-t flex justify-end">
+                                <button onClick={() => setEleveEnEdition(null)} className="px-4 py-2 text-gray-600 font-bold hover:bg-gray-100 rounded-lg transition">Fermer</button>
+                            </div>
+                        )}
                     </div>
                 </div>
             )}
