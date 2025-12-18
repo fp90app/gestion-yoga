@@ -4,7 +4,7 @@ import { Link } from 'react-router-dom';
 import { collection, query, where, getDocs, doc, getDoc } from 'firebase/firestore';
 import StudentSessionDetail from './StudentSessionDetail';
 import Skeleton from './components/Skeleton';
-import HistoryModal from './components/HistoryModal'; // <--- NOUVEL IMPORT
+import HistoryModal from './components/HistoryModal';
 
 const JOURS = ["Dimanche", "Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi"];
 
@@ -41,7 +41,7 @@ export default function StudentPortal() {
     const [student, setStudent] = useState(null);
     const [loading, setLoading] = useState(false);
 
-    // Loading spécifique pour le planning
+    // Loading spécifique pour le planning (évite de recharger toute la page)
     const [loadingPlanning, setLoadingPlanning] = useState(false);
 
     const [lundiActuel, setLundiActuel] = useState(getLundi(new Date()));
@@ -49,7 +49,10 @@ export default function StudentPortal() {
     const [donneesGlobales, setDonneesGlobales] = useState(null);
 
     const [selectedSession, setSelectedSession] = useState(null);
-    const [showHistory, setShowHistory] = useState(false); // <--- NOUVEAU STATE
+    const [showHistory, setShowHistory] = useState(false);
+
+    // --- NOUVEAU FILTRE : Voir uniquement mes cours ---
+    const [onlyMyCourses, setOnlyMyCourses] = useState(false);
 
     // --- LOGIN ---
     const handleLogin = async (e) => {
@@ -112,12 +115,14 @@ export default function StudentPortal() {
         const ajouts = exceptions.filter(ex => ex.type === 'ajout');
 
         let planning = [];
+        const now = new Date(); // Date actuelle pour le calcul "passé/futur"
 
         for (let i = 0; i < 7; i++) {
             const dateDuJour = ajouterJours(lundiActuel, i);
             const jourIndexJS = dateDuJour.getDay();
             const dateStr = dateDuJour.toLocaleDateString('fr-CA');
 
+            // 1. Groupes Hebdomadaires
             const groupesDuJour = allGroups.filter(g => {
                 if (g.jour !== jourIndexJS) return false;
                 const debut = g.dateDebut?.toDate ? g.dateDebut.toDate() : new Date('2000-01-01');
@@ -126,6 +131,7 @@ export default function StudentPortal() {
                 return dateDuJour >= debut && dateDuJour <= fin;
             });
 
+            // 2. Séances Exceptionnelles (Ajouts)
             const ajoutsDuJour = ajouts.filter(a => a.date === dateStr).map(a => ({
                 id: a.id,
                 ...a.newSessionData,
@@ -148,6 +154,7 @@ export default function StudentPortal() {
                 const statusMap = attendanceDoc?.status || {};
                 const waitingListIds = attendanceDoc?.waitingList || [];
 
+                // --- 1. LISTE DES PRÉSENTS ---
                 const recurrentsIds = (!groupe.isExceptionnel)
                     ? allEleves.filter(e => e.enrolledGroupIds && e.enrolledGroupIds.includes(groupe.id)).map(e => e.id)
                     : [];
@@ -175,6 +182,12 @@ export default function StudentPortal() {
 
                 const waitingListPosition = isInWaitingList ? waitingListIds.indexOf(student.id) + 1 : null;
 
+                // --- NOUVEAU : CALCUL SI PASSÉ ---
+                const [h, m] = groupe.heureDebut.split(':').map(Number);
+                const sessionEnd = new Date(dateDuJour);
+                sessionEnd.setHours(h, m + (groupe.duree || 60), 0, 0); // On considère passé à la fin du cours
+                const isPast = now > sessionEnd;
+
                 planning.push({
                     type: groupe.isExceptionnel ? 'ajout' : 'standard',
                     groupe,
@@ -192,7 +205,8 @@ export default function StudentPortal() {
                     waitingListDetails,
                     donneesGlobales,
                     isExceptionnel: !!groupe.isExceptionnel,
-                    estAnnule
+                    estAnnule,
+                    isPast // On transmet l'info
                 });
             });
         }
@@ -211,19 +225,24 @@ export default function StudentPortal() {
         }, 500);
     };
 
+    // --- FILTRAGE FINAL ---
+    const sessionsAffichees = onlyMyCourses
+        ? sessionsSemaine.filter(s => s.estInscritRecurrent || s.isMeGuest || s.isInWaitingList)
+        : sessionsSemaine;
+
     if (!student) {
         return (
-            <div className="min-h-screen flex flex-col bg-white">
-                <div className="flex-1 flex items-center justify-center p-4">
-                    <div className="bg-white p-8 rounded-2xl shadow-2xl w-full max-w-md border border-gray-100">
-                        <Link to="/" className="block text-center text-teal-800 font-bold mb-6 hover:underline">← Retour Accueil</Link>
-                        <h1 className="text-3xl font-playfair font-bold text-teal-800 mb-6 text-center">Espace Élève 🧘</h1>
-                        <form onSubmit={handleLogin} className="space-y-4">
-                            <input type="email" className="w-full border p-3 rounded-lg focus:ring-2 focus:ring-teal-500 outline-none" placeholder="Votre Email" value={email} onChange={e => setEmail(e.target.value)} required />
-                            <button disabled={loading} className="w-full bg-teal-900 text-white font-bold py-3 rounded-lg hover:bg-teal-800 shadow-xl transition-all mt-4">
-                                {loading ? 'Connexion...' : 'Connexion'}
-                            </button>
-                        </form>
+            <div className="min-h-screen flex items-center justify-center bg-teal-50 p-4">
+                <div className="bg-white p-8 rounded-2xl shadow-xl w-full max-w-md">
+                    <h1 className="text-3xl font-playfair font-bold text-teal-800 mb-6 text-center">Espace Élève 🧘</h1>
+                    <form onSubmit={handleLogin} className="space-y-4">
+                        <input type="email" className="w-full border p-3 rounded-lg" placeholder="Votre Email" value={email} onChange={e => setEmail(e.target.value)} required />
+                        <button disabled={loading} className="w-full bg-teal-900 text-white font-bold py-3 rounded-lg hover:bg-teal-800 shadow-xl transition-all mt-4 border border-teal-950">
+                            {loading ? 'Connexion...' : 'Connexion'}
+                        </button>
+                    </form>
+                    <div className="mt-6 text-center pt-4 border-t border-gray-100">
+                        <Link to="/admin" className="text-sm font-bold text-teal-600 hover:underline">🔒 Accès Professeur</Link>
                     </div>
                 </div>
             </div>
@@ -237,11 +256,10 @@ export default function StudentPortal() {
     return (
         <div className="min-h-screen bg-gray-50 flex flex-col font-sans">
             {/* HEADER */}
-            <header className="bg-white border-b sticky top-0 z-30 shadow-sm px-4 py-3 flex justify-between items-center">
+            <header className="bg-white border-b sticky top-0 z-30 shadow-sm px-4 py-3 flex justify-between items-center gap-2">
                 <div className="flex items-center gap-4">
-                    <h1 className="font-playfair font-bold text-xl text-teal-900">{student.prenom} {student.nom}</h1>
+                    <h1 className="font-playfair font-bold text-xl text-teal-900 hidden md:block">{student.prenom} {student.nom}</h1>
 
-                    {/* BOUTON SOLDE CLIQUABLE */}
                     <button
                         onClick={() => setShowHistory(true)}
                         className={`hidden md:inline-flex items-center gap-2 text-xs font-bold px-3 py-1 rounded-full border transition hover:shadow-md cursor-pointer ${soldeClass}`}
@@ -254,14 +272,21 @@ export default function StudentPortal() {
 
                 <div className="flex items-center bg-gray-100 rounded-lg p-1">
                     <button onClick={() => setLundiActuel(prev => ajouterJours(prev, -7))} className="w-8 h-8 rounded hover:bg-white text-gray-600 font-bold">←</button>
-                    <span className="text-xs font-bold text-gray-700 px-3 uppercase hidden sm:block">
+                    <span className="text-xs font-bold text-gray-700 px-2 uppercase hidden sm:block">
                         {lundiActuel.getDate()} {lundiActuel.toLocaleDateString('fr-FR', { month: 'short' })} - {dimancheFin.getDate()} {dimancheFin.toLocaleDateString('fr-FR', { month: 'short' })}
                     </span>
                     <button onClick={() => setLundiActuel(prev => ajouterJours(prev, 7))} className="w-8 h-8 rounded hover:bg-white text-gray-600 font-bold">→</button>
                 </div>
 
                 <div className="flex items-center gap-3">
-                    {/* SOLDE MOBILE */}
+                    {/* BOUTON FILTRE MES COURS */}
+                    <button
+                        onClick={() => setOnlyMyCourses(!onlyMyCourses)}
+                        className={`text-xs font-bold px-3 py-1.5 rounded-lg border transition flex items-center gap-1 ${onlyMyCourses ? 'bg-teal-600 text-white border-teal-600' : 'bg-white text-gray-500 border-gray-200 hover:bg-gray-50'}`}
+                    >
+                        <span>{onlyMyCourses ? '👁️ Mes cours' : '📅 Tout voir'}</span>
+                    </button>
+
                     <button
                         onClick={() => setShowHistory(true)}
                         className={`md:hidden text-xs font-bold px-2 py-1 rounded-full border ${soldeClass}`}
@@ -270,7 +295,7 @@ export default function StudentPortal() {
                     </button>
 
                     <Link to="/" className="text-gray-400 hover:text-teal-600 text-xs font-bold mr-2 hidden md:block">Accueil</Link>
-                    <button onClick={() => setStudent(null)} className="text-sm font-bold text-red-500 hover:bg-red-50 px-3 py-1 rounded transition">
+                    <button onClick={() => setStudent(null)} className="text-sm font-bold text-red-500 hover:bg-red-50 px-2 py-1 rounded transition">
                         Sortir
                     </button>
                 </div>
@@ -281,6 +306,7 @@ export default function StudentPortal() {
                 {/* VUE MOBILE */}
                 <div className="block md:hidden space-y-4 pb-20">
                     {loadingPlanning ? (
+                        // SKELETON MOBILE
                         <div className="space-y-6 p-4">
                             {[1, 2, 3].map(i => (
                                 <div key={i} className="pl-3 border-l-2 border-gray-200 space-y-2">
@@ -293,7 +319,8 @@ export default function StudentPortal() {
                     ) : (
                         [0, 1, 2, 3, 4, 5, 6].map(offset => {
                             const dateJour = ajouterJours(lundiActuel, offset);
-                            const sessions = sessionsSemaine.filter(s => s.dateObj.toDateString() === dateJour.toDateString());
+                            // UTILISATION DU FILTRE ICI
+                            const sessions = sessionsAffichees.filter(s => s.dateObj.toDateString() === dateJour.toDateString());
                             if (sessions.length === 0) return null;
 
                             return (
@@ -314,39 +341,47 @@ export default function StudentPortal() {
                                                 );
                                             }
 
+                                            // --- COULEURS ET STYLES MOBILE ---
+                                            const isFull = sess.placesRestantes <= 0;
                                             let bg = "bg-white border-gray-200";
-                                            let centerText = null;
+                                            let containerStyle = "active:scale-95 transition-transform flex justify-between items-center cursor-pointer";
 
-                                            if (sess.type === 'ajout') bg = "bg-purple-50/50 border-purple-200";
-
-                                            if (sess.estInscritRecurrent) {
-                                                if (sess.isMeAbsent) {
-                                                    bg = "bg-orange-50 border-orange-300";
-                                                    centerText = "ABSENT";
+                                            if (sess.isPast) {
+                                                // GRISÉ SI PASSÉ
+                                                bg = "bg-gray-50 border-gray-200 opacity-60 grayscale-[80%]";
+                                                containerStyle = "flex justify-between items-center cursor-pointer"; // Pas d'effet de clic
+                                            } else {
+                                                if (sess.type === 'ajout') {
+                                                    bg = "bg-purple-50/50 border-purple-200"; // VIOLET
+                                                } else if (isFull) {
+                                                    bg = "bg-red-50/50 border-red-200"; // ROUGE SI COMPLET
                                                 } else {
-                                                    bg = "bg-teal-50 border-teal-300";
-                                                    centerText = "INSCRIT";
+                                                    bg = "bg-teal-50/30 border-teal-200"; // VERT SINON
                                                 }
+                                            }
+
+                                            let centerText = null;
+                                            if (sess.estInscritRecurrent) {
+                                                if (sess.isMeAbsent) centerText = "ABSENT";
+                                                else centerText = "INSCRIT";
                                             } else if (sess.isMeGuest) {
-                                                bg = "bg-purple-50 border-purple-300";
                                                 centerText = "RÉSERVÉ";
                                             } else if (sess.isInWaitingList) {
-                                                bg = "bg-orange-50 border-orange-300 border-dashed";
                                                 centerText = `ATTENTE ${sess.waitingListPosition}`;
                                             }
 
                                             return (
-                                                <div key={sess.seanceId} onClick={() => setSelectedSession(sess)} className={`p-3 rounded-lg border shadow-sm ${bg} active:scale-95 transition-transform flex justify-between items-center cursor-pointer`}>
+                                                <div key={sess.seanceId} onClick={() => setSelectedSession(sess)} className={`p-3 rounded-lg border shadow-sm ${bg} ${containerStyle}`}>
                                                     <div>
                                                         <div className="font-bold text-gray-800">{sess.groupe.nom}</div>
                                                         <div className="text-xs font-mono text-gray-500">{sess.groupe.heureDebut}</div>
                                                         {sess.groupe.theme && <div className="text-xs text-purple-600 italic mt-0.5">"{sess.groupe.theme}"</div>}
-                                                        <div className={`text-xs mt-1 ${sess.placesRestantes > 0 ? "text-green-600" : "text-red-500"}`}>
+                                                        <div className={`text-xs mt-1 ${isFull && !sess.isPast ? "text-red-500" : "text-green-600"}`}>
                                                             {getPlacesLabel(sess.placesRestantes)}
                                                         </div>
                                                     </div>
                                                     {centerText && (
-                                                        <span className="text-xs font-black uppercase tracking-wider px-2 py-1 rounded bg-white/50 border border-black/10">
+                                                        <span className={`text-xs font-black uppercase tracking-wider px-2 py-1 rounded border shadow-sm ${centerText === 'ABSENT' ? 'bg-orange-100 text-orange-700 border-orange-200' : 'bg-white text-gray-800 border-gray-200'}`}>
                                                             {centerText}
                                                         </span>
                                                     )}
@@ -383,13 +418,13 @@ export default function StudentPortal() {
 
                         {[1, 2, 3, 4, 5, 6, 0].map((jourIndex) => {
                             const dateJour = ajouterJours(lundiActuel, jourIndex === 0 ? 6 : jourIndex - 1);
-                            const isToday = new Date().toDateString() === dateJour.toDateString();
-                            const sessions = sessionsSemaine.filter(s => s.dateObj.getDay() === jourIndex);
+                            // UTILISATION DU FILTRE ICI
+                            const sessions = sessionsAffichees.filter(s => s.dateObj.getDay() === jourIndex);
 
                             return (
-                                <div key={jourIndex} className={`relative ${isToday ? 'bg-teal-50/10' : ''}`} style={{ height: (HEURE_FIN - HEURE_DEBUT) * PIXELS_PAR_HEURE }}>
-                                    <div className={`text-center py-2 border-b border-gray-200 sticky top-0 z-10 ${isToday ? 'bg-teal-100 text-teal-900 font-bold' : 'bg-gray-50 text-gray-600'}`}>
-                                        <div className="text-xs uppercase tracking-wide">{JOURS[jourIndex].substring(0, 3)}</div>
+                                <div key={jourIndex} className="relative" style={{ height: (HEURE_FIN - HEURE_DEBUT) * PIXELS_PAR_HEURE }}>
+                                    <div className="text-center py-2 border-b border-gray-200 sticky top-0 z-10 bg-gray-50 text-gray-600">
+                                        <div className="text-xs uppercase">{JOURS[jourIndex].substring(0, 3)}</div>
                                         <div className="text-lg">{dateJour.getDate()}</div>
                                     </div>
                                     {Array.from({ length: HEURE_FIN - HEURE_DEBUT }).map((_, i) => (
@@ -399,6 +434,7 @@ export default function StudentPortal() {
                                     {sessions.map(sess => {
                                         const stylePos = getCardStyle(sess.groupe.heureDebut, sess.groupe.duree);
 
+                                        // --- GESTION ANNULÉ ---
                                         if (sess.estAnnule) {
                                             return (
                                                 <div
@@ -414,61 +450,63 @@ export default function StudentPortal() {
                                             );
                                         }
 
+                                        // --- COULEURS ET STYLES DESKTOP ---
                                         const isFull = sess.placesRestantes <= 0;
                                         let containerClass = "hover:shadow-md cursor-pointer border-l-4 transition-all opacity-95 hover:opacity-100 flex flex-col justify-between";
                                         let titleColor = "text-gray-700";
+
+                                        if (sess.isPast) {
+                                            // PASSÉ
+                                            containerClass += " bg-gray-100 border-gray-300 opacity-70 grayscale";
+                                            titleColor = "text-gray-500";
+                                        } else {
+                                            if (sess.type === 'ajout') {
+                                                // VIOLET
+                                                containerClass += " bg-purple-50 border-purple-500 hover:bg-purple-100";
+                                                titleColor = "text-purple-900";
+                                            } else if (isFull) {
+                                                // ROUGE (Complet)
+                                                containerClass += " bg-red-50 border-red-500 hover:bg-red-100";
+                                                titleColor = "text-red-900";
+                                            } else {
+                                                // VERT (Standard)
+                                                containerClass += " bg-teal-50 border-teal-500 hover:bg-teal-100";
+                                                titleColor = "text-teal-900";
+                                            }
+                                        }
+
+                                        // 2. Badges & Overlays (Statut Elève)
                                         let topBadge = null;
                                         let centerOverlay = null;
 
-                                        if (sess.type === 'ajout') {
-                                            containerClass += " bg-purple-50/40 border-purple-300";
-                                            titleColor = "text-purple-900";
-                                            if (!sess.isMeGuest) topBadge = <span className="text-[9px] font-bold text-purple-700 bg-purple-100 px-1 rounded">SPÉCIAL</span>;
-                                        } else {
-                                            containerClass += " bg-white border-gray-200 hover:border-teal-300";
-                                            titleColor = "text-gray-800";
+                                        if (sess.type === 'ajout' && !sess.isMeGuest && !sess.isPast) {
+                                            topBadge = <span className="text-[9px] font-bold text-purple-700 bg-white/80 px-1 rounded">SPÉCIAL</span>;
                                         }
 
                                         if (sess.estInscritRecurrent) {
                                             if (sess.isMeAbsent) {
-                                                containerClass = containerClass.replace('bg-white', 'bg-orange-50').replace('border-gray-200', 'border-orange-400');
-                                                titleColor = "text-orange-900 line-through decoration-orange-300";
-                                                topBadge = <span className="text-[9px] font-bold text-orange-600 bg-white/80 px-1 rounded">ABSENCE</span>;
-                                                centerOverlay = <div className="text-orange-300/20 font-black text-2xl -rotate-12 select-none">ABSENT</div>;
+                                                centerOverlay = <div className="text-orange-600/80 bg-orange-100/90 px-2 py-1 rounded font-black text-sm -rotate-12 border-2 border-orange-300">ABSENT</div>;
                                             } else {
-                                                containerClass = containerClass.replace('bg-white', 'bg-teal-50').replace('border-gray-200', 'border-teal-500');
-                                                titleColor = "text-teal-900";
-                                                topBadge = <span className="text-[9px] font-bold text-teal-700 bg-white/80 px-1 rounded">HEBDOMADAIRE</span>;
                                                 centerOverlay = (
                                                     <div className="bg-white/90 px-3 py-1 rounded-lg border-2 border-teal-600 shadow-sm flex items-center gap-1 z-10">
-                                                        <span className="text-teal-700 font-black text-sm md:text-base tracking-widest">INSCRIT</span>
+                                                        <span className="text-teal-700 font-black text-xs tracking-widest">INSCRIT</span>
                                                         <span className="text-teal-600 text-xs">✅</span>
                                                     </div>
                                                 );
                                             }
                                         } else if (sess.isMeGuest) {
-                                            containerClass = "bg-purple-50 border-purple-500 border-l-4 " + containerClass.split(' ').filter(c => !c.startsWith('bg-') && !c.startsWith('border-')).join(' ');
-                                            titleColor = "text-purple-900";
-                                            topBadge = <span className="text-[9px] font-bold text-purple-700 bg-white/80 px-1 rounded">RÉSERVÉ</span>;
                                             centerOverlay = (
                                                 <div className="bg-white/90 px-3 py-1 rounded-lg border-2 border-purple-600 shadow-sm flex items-center gap-1 z-10">
-                                                    <span className="text-purple-700 font-black text-sm md:text-base tracking-widest">RÉSERVÉ</span>
+                                                    <span className="text-purple-700 font-black text-xs tracking-widest">RÉSERVÉ</span>
                                                     <span className="text-purple-600 text-xs">🎉</span>
                                                 </div>
                                             );
-                                        } else {
-                                            if (isFull) {
-                                                containerClass += " opacity-60";
-                                                titleColor = "text-gray-400";
-                                            }
-                                            if (sess.isInWaitingList) {
-                                                containerClass = "bg-orange-50 border-orange-300 border-dashed border-l-4";
-                                                centerOverlay = (
-                                                    <div className="bg-orange-100 text-orange-800 font-bold px-2 py-1 rounded text-xs z-10 shadow-sm border border-orange-200">
-                                                        FILE D'ATTENTE : {sess.waitingListPosition}e
-                                                    </div>
-                                                );
-                                            }
+                                        } else if (sess.isInWaitingList) {
+                                            centerOverlay = (
+                                                <div className="bg-orange-100 text-orange-800 font-bold px-2 py-1 rounded text-xs z-10 shadow-sm border border-orange-200">
+                                                    FILE D'ATTENTE : {sess.waitingListPosition}e
+                                                </div>
+                                            );
                                         }
 
                                         return (
@@ -506,7 +544,7 @@ export default function StudentPortal() {
                                                 )}
 
                                                 <div className="relative z-0 flex justify-between items-end border-t border-black/5 pt-1 mt-1 pointer-events-none">
-                                                    <div className={`text-[10px] font-bold ${isFull && !sess.estInscritRecurrent && !sess.isMeGuest ? 'text-red-500' : 'text-green-600'}`}>
+                                                    <div className={`text-[10px] font-bold ${isFull && !sess.isPast ? 'text-red-500' : 'text-green-600'}`}>
                                                         {getPlacesLabel(sess.placesRestantes)}
                                                     </div>
                                                 </div>
@@ -520,7 +558,7 @@ export default function StudentPortal() {
                 </div>
             </main>
 
-            {/* MODALE DÉTAILS SÉANCE */}
+            {/* --- MODALE DÉTAILS SÉANCE --- */}
             {selectedSession && (
                 <StudentSessionDetail
                     session={selectedSession}
@@ -530,7 +568,7 @@ export default function StudentPortal() {
                 />
             )}
 
-            {/* MODALE HISTORIQUE (NOUVEAU) */}
+            {/* --- MODALE HISTORIQUE --- */}
             {showHistory && (
                 <HistoryModal
                     student={student}

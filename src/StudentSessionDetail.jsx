@@ -10,7 +10,7 @@ export default function StudentSessionDetail({ session, student, onClose, onUpda
     const [processing, setProcessing] = useState(false);
     const [confirmConfig, setConfirmConfig] = useState(null);
 
-    const { groupe, dateObj, seanceId, dateStr, isExceptionnel } = session;
+    const { groupe, dateObj, seanceId, dateStr, isExceptionnel, isPast } = session; // <--- On récupère isPast
     const allEleves = session.donneesGlobales.allEleves;
 
     useEffect(() => {
@@ -56,14 +56,12 @@ export default function StudentSessionDetail({ session, student, onClose, onUpda
     const totalPresents = nbTitulairesPresents + nbInvitesTotal;
     const isPhysicallyFull = totalPresents >= capacity;
 
-    // --- LOGGING HISTORIQUE (NOUVEAU) ---
     const addHistoryEntry = (batch, delta, motif) => {
-        // On crée une référence vers une nouvelle ligne dans la sous-collection "history" de l'élève
         const historyRef = doc(collection(db, "eleves", myId, "history"));
         batch.set(historyRef, {
             date: serverTimestamp(),
-            delta: delta, // +1 ou -1
-            motif: motif, // ex: "Annulation Hatha (12/05)"
+            delta: delta,
+            motif: motif,
             seanceId: seanceId,
             groupeNom: groupe.nom,
             seanceDate: dateStr
@@ -174,6 +172,7 @@ export default function StudentSessionDetail({ session, student, onClose, onUpda
     // --- ACTIONS ---
 
     const toggleMyPresence = () => {
+        if (isPast) return; // Sécurité double
         const isAbsentNow = myStatus === 'absent' || myStatus === 'absent_announced';
         if (isAbsentNow && isPhysicallyFull) return toast.error("Cours complet.");
 
@@ -198,12 +197,10 @@ export default function StudentSessionDetail({ session, student, onClose, onUpda
             const userRef = doc(db, "eleves", myId);
 
             if (isAbsentNow) {
-                // Je reviens -> -1 Crédit
                 batch.set(ref, { status: { [myId]: deleteField() } }, { merge: true });
                 batch.update(userRef, { absARemplacer: increment(-1) });
                 addHistoryEntry(batch, -1, `Retour : ${groupe.nom} (${dateStr})`);
             } else {
-                // Je m'absente -> +1 Crédit (sauf si tard)
                 batch.set(ref, {
                     date: dateStr, groupeId: groupe.id, nomGroupe: groupe.nom, realDate: Timestamp.fromDate(dateObj),
                     status: { [myId]: 'absent_announced' }, updatedAt: serverTimestamp()
@@ -213,7 +210,6 @@ export default function StudentSessionDetail({ session, student, onClose, onUpda
                     batch.update(userRef, { absARemplacer: increment(1) });
                     addHistoryEntry(batch, 1, `Absence : ${groupe.nom} (${dateStr})`);
                 } else {
-                    // Optionnel : On peut logger le "0" pour trace
                     addHistoryEntry(batch, 0, `Absence Tardive : ${groupe.nom} (${dateStr})`);
                 }
             }
@@ -222,6 +218,7 @@ export default function StudentSessionDetail({ session, student, onClose, onUpda
     };
 
     const bookSpot = () => {
+        if (isPast) return;
         triggerConfirmation('book', () => handleAction(async () => {
             const batch = writeBatch(db);
             const ref = doc(db, "attendance", seanceId);
@@ -247,7 +244,6 @@ export default function StudentSessionDetail({ session, student, onClose, onUpda
 
             batch.set(ref, updateData, { merge: true });
             batch.update(userRef, { absARemplacer: increment(-1) });
-            // Log Historique
             addHistoryEntry(batch, -1, `Réservation : ${groupe.nom} (${dateStr})`);
 
             await batch.commit();
@@ -255,6 +251,7 @@ export default function StudentSessionDetail({ session, student, onClose, onUpda
     };
 
     const cancelBooking = () => {
+        if (isPast) return;
         triggerConfirmation('cancel_booking', () => handleAction(async () => {
             const batch = writeBatch(db);
             const ref = doc(db, "attendance", seanceId);
@@ -265,7 +262,6 @@ export default function StudentSessionDetail({ session, student, onClose, onUpda
                 [`replacementLinks.${myId}`]: deleteField()
             });
             batch.update(userRef, { absARemplacer: increment(1) });
-            // Log Historique
             addHistoryEntry(batch, 1, `Annulation Résa : ${groupe.nom} (${dateStr})`);
 
             await batch.commit();
@@ -273,6 +269,7 @@ export default function StudentSessionDetail({ session, student, onClose, onUpda
     };
 
     const toggleWaitlist = () => {
+        if (isPast) return;
         const action = isInWaitingList ? 'waitlist_leave' : 'waitlist_join';
         triggerConfirmation(action, () => handleAction(async () => {
             const batch = writeBatch(db);
@@ -288,8 +285,6 @@ export default function StudentSessionDetail({ session, student, onClose, onUpda
 
     if (loading) return <div className="fixed inset-0 bg-black/80 flex items-center justify-center text-white z-50">Chargement...</div>;
 
-    // --- RENDER IDENTIQUE A L'ÉTAPE PRECEDENTE ---
-    // (Je remets le code de calcul des slots pour que le fichier soit complet et fonctionnel)
     const linkedGuestIds = Object.keys(replacementLinks).filter(guestId => {
         const titulaireId = replacementLinks[guestId];
         return inscrits.some(t => t.id === titulaireId);
@@ -322,7 +317,15 @@ export default function StudentSessionDetail({ session, student, onClose, onUpda
             </ConfirmModal>
 
             <div className="bg-white rounded-2xl shadow-2xl w-full max-w-5xl overflow-hidden flex flex-col max-h-[95vh] relative" onClick={e => e.stopPropagation()}>
-                <div className={`p-6 text-white flex justify-between items-start ${isExceptionnel ? 'bg-purple-800' : 'bg-teal-900'}`}>
+
+                {/* HEADER SPÉCIAL "PASSÉ" */}
+                {isPast && (
+                    <div className="bg-gray-800 text-white text-center py-2 text-xs font-bold uppercase tracking-widest">
+                        Ce cours est terminé
+                    </div>
+                )}
+
+                <div className={`p-6 text-white flex justify-between items-start ${isExceptionnel ? 'bg-purple-800' : 'bg-teal-900'} ${isPast ? 'opacity-90 saturate-50' : ''}`}>
                     <div>
                         <div className="flex items-center gap-2">
                             <h2 className="text-2xl font-bold font-playfair">{groupe.nom}</h2>
@@ -360,7 +363,7 @@ export default function StudentSessionDetail({ session, student, onClose, onUpda
                                 if (isMe) borderClass += " ring-2 ring-teal-200";
 
                                 return (
-                                    <div key={eleve.id} className={`relative p-4 rounded-xl border-l-4 shadow-sm bg-white transition-all ${borderClass}`}>
+                                    <div key={eleve.id} className={`relative p-4 rounded-xl border-l-4 shadow-sm bg-white transition-all ${borderClass} ${isPast ? 'opacity-80' : ''}`}>
                                         <div className="flex justify-between items-start">
                                             <div>
                                                 <div className="font-bold text-gray-800 text-lg flex items-center gap-2">
@@ -368,7 +371,7 @@ export default function StudentSessionDetail({ session, student, onClose, onUpda
                                                     {isMe && <span className="bg-teal-100 text-teal-800 text-[10px] px-1.5 py-0.5 rounded uppercase">Moi</span>}
                                                 </div>
                                                 <div className="text-[10px] uppercase font-bold text-gray-400 mb-2 tracking-wide">Titulaire</div>
-                                                {isMe && !processing && (
+                                                {isMe && !processing && !isPast && ( // <--- BLOQUÉ SI PASSÉ
                                                     <div className="group relative inline-block">
                                                         <button onClick={toggleMyPresence} disabled={cannotReclaim} className={`text-xs px-3 py-1 rounded font-bold border transition ${cannotReclaim ? 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed' : (isPresent ? 'bg-teal-50 text-teal-700 border-teal-200 hover:bg-teal-100' : 'bg-white text-red-500 border-red-200 shadow-sm hover:bg-red-50')}`}>
                                                             {cannotReclaim ? "Place prise" : (isPresent ? "Je m'absente" : "Je viens")}
@@ -378,7 +381,7 @@ export default function StudentSessionDetail({ session, student, onClose, onUpda
                                                 {!isMe && (
                                                     <div className="text-right">
                                                         <span className={`block text-xs font-bold ${isPresent ? 'text-teal-600' : 'text-red-400'}`}>{isPresent ? 'Présent' : 'Absent'}</span>
-                                                        {!isPresent && !replacement && !myStatus && !processing && !isTitulaire && (
+                                                        {!isPresent && !replacement && !myStatus && !processing && !isTitulaire && !isPast && ( // <--- BLOQUÉ SI PASSÉ
                                                             <button onClick={(e) => { e.stopPropagation(); bookSpot(); }} className="mt-1.5 bg-purple-600 text-white text-[10px] px-3 py-1.5 rounded-lg font-bold hover:bg-purple-700 shadow-md flex items-center gap-1"><span>⚡ Remplacer</span></button>
                                                         )}
                                                     </div>
@@ -388,7 +391,7 @@ export default function StudentSessionDetail({ session, student, onClose, onUpda
                                         {replacement && (
                                             <div className="mt-3 pt-3 border-t border-purple-100 flex justify-between items-center text-purple-700">
                                                 <div className="flex items-center gap-2"><span className="text-xl">↳</span><span className="font-bold text-sm block">{replacement.prenom} {replacement.nom.charAt(0)}. {replacement.id === myId && " (Moi)"}</span></div>
-                                                {replacement.id === myId && !processing && <button onClick={(e) => { e.stopPropagation(); cancelBooking(); }} className="text-xs bg-white text-red-500 border border-red-200 px-2 py-1 rounded">Annuler</button>}
+                                                {replacement.id === myId && !processing && !isPast && <button onClick={(e) => { e.stopPropagation(); cancelBooking(); }} className="text-xs bg-white text-red-500 border border-red-200 px-2 py-1 rounded">Annuler</button>}
                                             </div>
                                         )}
                                     </div>
@@ -398,16 +401,16 @@ export default function StudentSessionDetail({ session, student, onClose, onUpda
                                 const eleve = slot.student;
                                 const isMe = eleve.id === myId;
                                 return (
-                                    <div key={eleve.id} className={`p-4 rounded-xl border-l-4 border-purple-500 bg-purple-50 shadow-sm flex justify-between items-center ${isMe ? 'ring-2 ring-purple-200' : ''}`}>
+                                    <div key={eleve.id} className={`p-4 rounded-xl border-l-4 border-purple-500 bg-purple-50 shadow-sm flex justify-between items-center ${isMe ? 'ring-2 ring-purple-200' : ''} ${isPast ? 'opacity-80' : ''}`}>
                                         <div><div className="font-bold text-gray-800 text-lg">{eleve.prenom} {eleve.nom.charAt(0)}. {isMe && <span className="ml-2 bg-purple-200 text-purple-800 text-[10px] px-1.5 py-0.5 rounded uppercase">Moi</span>}</div><div className="text-[10px] uppercase font-bold text-purple-600 tracking-wide">{isExceptionnel ? "Participant" : "Invité"}</div></div>
-                                        {isMe && !processing && <button onClick={cancelBooking} className="text-xs bg-white border border-red-200 text-red-500 px-2 py-1 rounded">Annuler</button>}
+                                        {isMe && !processing && !isPast && <button onClick={cancelBooking} className="text-xs bg-white border border-red-200 text-red-500 px-2 py-1 rounded">Annuler</button>}
                                     </div>
                                 );
                             }
                             return (
-                                <div key={`empty-${index}`} className="relative p-4 rounded-xl border-2 border-dashed border-gray-300 bg-gray-50 flex flex-col justify-center items-center min-h-[100px] group hover:border-teal-400 hover:bg-white transition-all">
+                                <div key={`empty-${index}`} className={`relative p-4 rounded-xl border-2 border-dashed border-gray-300 bg-gray-50 flex flex-col justify-center items-center min-h-[100px] group transition-all ${isPast ? 'opacity-50' : 'hover:border-teal-400 hover:bg-white'}`}>
                                     <div className="text-gray-400 text-xs font-bold uppercase mb-2 tracking-widest group-hover:text-teal-600">Place Libre</div>
-                                    {!isTitulaire && !myStatus && !processing && <button onClick={bookSpot} className="px-6 py-2 bg-white border border-gray-300 rounded-lg text-sm font-bold text-gray-600 hover:text-white hover:bg-teal-600 hover:border-teal-600 shadow-sm transition">Réserver</button>}
+                                    {!isTitulaire && !myStatus && !processing && !isPast && <button onClick={bookSpot} className="px-6 py-2 bg-white border border-gray-300 rounded-lg text-sm font-bold text-gray-600 hover:text-white hover:bg-teal-600 hover:border-teal-600 shadow-sm transition">Réserver</button>}
                                 </div>
                             );
                         })}
@@ -420,7 +423,7 @@ export default function StudentSessionDetail({ session, student, onClose, onUpda
                                 {overflowGuests.map(eleve => (
                                     <div key={eleve.id} className="p-3 rounded-lg border border-red-200 bg-red-50 flex justify-between items-center shadow-sm">
                                         <div className="flex items-center gap-3"><span className="text-red-500 font-bold text-xl">+</span><span className="text-sm font-bold text-gray-800">{eleve.prenom} {eleve.nom.charAt(0)}. {eleve.id === myId && "(Moi)"}</span></div>
-                                        {eleve.id === myId && <button onClick={cancelBooking} className="text-xs bg-white border border-red-200 text-red-500 px-2 py-1 rounded">Annuler</button>}
+                                        {eleve.id === myId && !isPast && <button onClick={cancelBooking} className="text-xs bg-white border border-red-200 text-red-500 px-2 py-1 rounded">Annuler</button>}
                                     </div>
                                 ))}
                             </div>
@@ -437,13 +440,13 @@ export default function StudentSessionDetail({ session, student, onClose, onUpda
                                 return (
                                     <div key={uid} className={`p-3 rounded-lg border flex justify-between items-center shadow-sm ${isMe ? 'bg-orange-100 border-orange-300' : 'bg-white border-orange-100'}`}>
                                         <span className={`text-sm font-medium ${isMe ? 'text-orange-900' : 'text-gray-800'}`}>{eleve.prenom} {eleve.nom.charAt(0)}. {isMe && <span className="ml-2 font-bold text-xs uppercase">(Moi)</span>}</span>
-                                        {isMe && !processing && <button onClick={toggleWaitlist} className="text-xs text-orange-600 hover:text-red-600 hover:bg-white px-2 py-1 rounded border border-transparent hover:border-gray-200 transition">Quitter</button>}
+                                        {isMe && !processing && !isPast && <button onClick={toggleWaitlist} className="text-xs text-orange-600 hover:text-red-600 hover:bg-white px-2 py-1 rounded border border-transparent hover:border-gray-200 transition">Quitter</button>}
                                     </div>
                                 )
                             })}
                             {(!attendanceData.waitingList || attendanceData.waitingList.length === 0) && <p className="text-xs text-orange-300 italic text-center py-2">Vide.</p>}
                         </div>
-                        {!isTitulaire && !myStatus && !isInWaitingList && isPhysicallyFull && (
+                        {!isTitulaire && !myStatus && !isInWaitingList && isPhysicallyFull && !isPast && (
                             <div className="mt-4 pt-4 border-t border-orange-200 text-center">
                                 <button onClick={toggleWaitlist} className="w-full md:w-auto bg-orange-400 text-white px-6 py-2 rounded-lg font-bold hover:bg-orange-500 shadow-md transition">M'ajouter à la liste d'attente</button>
                             </div>

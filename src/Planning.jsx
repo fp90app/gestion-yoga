@@ -13,6 +13,7 @@ const HEURE_DEBUT = 8;
 const HEURE_FIN = 21;
 const PIXELS_PAR_HEURE = 80;
 
+// --- HELPERS ---
 const getLundi = (d) => {
     const date = new Date(d);
     const day = date.getDay();
@@ -31,24 +32,28 @@ const ajouterJours = (date, jours) => {
 
 const formaterDateSimple = (date) => `${date.getDate()} ${MOIS[date.getMonth()]}`;
 
-
 export default function Planning() {
+    // --- ÉTATS ---
     const [coursAffiches, setCoursAffiches] = useState([]);
     const [donneesBrutes, setDonneesBrutes] = useState({ groupes: [], eleves: [], exceptions: [], attendances: [] });
     const [loading, setLoading] = useState(true);
     const [lundiActuel, setLundiActuel] = useState(getLundi(new Date()));
-    const [groupeAEditerId, setGroupeAEditerId] = useState(null);
 
-    // --- MODALES ---
+    // --- MODES D'AFFICHAGE (Nouveau) ---
+    const [selectedStudentId, setSelectedStudentId] = useState(""); // Si vide = Vue Professeur
+
+    // --- MODALES & SÉLECTIONS ---
+    const [groupeAEditerId, setGroupeAEditerId] = useState(null);
     const [seanceSelectionnee, setSeanceSelectionnee] = useState(null);
     const [showAjoutModal, setShowAjoutModal] = useState(false);
     const [showGestionGroupes, setShowGestionGroupes] = useState(false);
     const [exceptionAEditer, setExceptionAEditer] = useState(null);
+    const [choixCreation, setChoixCreation] = useState(null); // { date, heure }
 
-    // Menu choix création
-    const [choixCreation, setChoixCreation] = useState(null);
-
-    useEffect(() => { fetchDonnees(); }, [lundiActuel]);
+    // --- CHARGEMENT INITIAL ---
+    useEffect(() => {
+        fetchDonnees();
+    }, [lundiActuel]);
 
     const fetchDonnees = async () => {
         try {
@@ -57,6 +62,7 @@ export default function Planning() {
             const finSemaine = ajouterJours(lundiActuel, 6);
             const finSemaineStr = finSemaine.toLocaleDateString('fr-CA');
 
+            // Chargement parallèle pour optimiser
             const [groupesSnap, elevesSnap, exceptionsSnap, attendanceSnap] = await Promise.all([
                 getDocs(query(collection(db, "groupes"), where("actif", "==", true))),
                 getDocs(collection(db, "eleves")),
@@ -64,68 +70,111 @@ export default function Planning() {
                 getDocs(query(collection(db, "attendance"), where("date", ">=", debutSemaineStr), where("date", "<=", finSemaineStr)))
             ]);
 
+            const elevesData = elevesSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+            elevesData.sort((a, b) => a.nom.localeCompare(b.nom)); // Tri pour le menu déroulant
+
             setDonneesBrutes({
                 groupes: groupesSnap.docs.map(d => ({ id: d.id, ...d.data() })),
-                eleves: elevesSnap.docs.map(d => ({ id: d.id, ...d.data() })),
+                eleves: elevesData,
                 exceptions: exceptionsSnap.docs.map(d => ({ id: d.id, ...d.data() })),
                 attendances: attendanceSnap.docs.map(d => ({ id: d.id, ...d.data() }))
             });
-        } catch (error) { console.error("Erreur:", error); } finally { setLoading(false); }
+        } catch (error) {
+            console.error("Erreur chargement:", error);
+        } finally {
+            setLoading(false);
+        }
     };
+
+    // --- CALCUL DU PLANNING ---
+    // Déclenché quand les données changent OU quand on change d'élève sélectionné
+    useEffect(() => {
+        if (!loading) calculerPlanningDeLaSemaine();
+    }, [lundiActuel, donneesBrutes, loading, selectedStudentId]);
 
     const calculerPlanningDeLaSemaine = () => {
         const { groupes, eleves, exceptions, attendances } = donneesBrutes;
         let listeFinale = [];
+        const now = new Date();
 
-        // Fonction Helper pour récupérer les stats (Présents / Attente)
-        // Correction : Ajout du paramètre isException pour gérer les IDs correctement
+        // Si un élève est sélectionné, on le récupère
+        const selectedStudent = selectedStudentId ? eleves.find(e => e.id === selectedStudentId) : null;
+
+        // Fonction helper locale pour calculer l'occupation ET le statut de l'élève cible
         const getStatsSeance = (groupeId, dateStr, isException, inscritsBase) => {
-            // Si c'est une exception, l'ID dans attendance EST l'ID du document exception (groupeId)
-            // Si c'est standard, l'ID est "YYYY-MM-DD_groupeId"
             const seanceId = isException ? groupeId : `${dateStr}_${groupeId}`;
-
             const attendanceDoc = attendances.find(a => a.id === seanceId);
-            let nbAbsents = 0, nbInvites = 0, waitingCount = 0;
+
+            let nbAbsents = 0;
+            let nbInvites = 0;
+            let waitingCount = 0;
+
+            // Statut spécifique de l'élève regardé (si actif)
+            let studentStatus = { enrolled: false, absent: false, guest: false, waiting: false, waitingPos: null };
+
+            // 1. Est-il inscrit de base ?
+            if (selectedStudent && !isException) {
+                studentStatus.enrolled = selectedStudent.enrolledGroupIds && selectedStudent.enrolledGroupIds.includes(groupeId);
+            }
 
             if (attendanceDoc) {
                 const status = attendanceDoc.status || {};
                 waitingCount = attendanceDoc.waitingList ? attendanceDoc.waitingList.length : 0;
+
+                // Vérif file d'attente
+                if (selectedStudent && attendanceDoc.waitingList && attendanceDoc.waitingList.includes(selectedStudent.id)) {
+                    studentStatus.waiting = true;
+                    studentStatus.waitingPos = attendanceDoc.waitingList.indexOf(selectedStudent.id) + 1;
+                }
+
                 Object.entries(status).forEach(([uid, st]) => {
                     const eleve = eleves.find(e => e.id === uid);
-                    if (!eleve) return;
+                    if (!eleve) return; // Sécurité
 
-                    // Est-il inscrit officiellement ? (Toujours faux pour une exception)
+                    // Est-ce un titulaire ?
                     const estInscrit = !isException && eleve.enrolledGroupIds && eleve.enrolledGroupIds.includes(groupeId);
 
                     if (estInscrit && (st === 'absent' || st === 'absent_announced')) {
                         nbAbsents++;
+                        if (selectedStudent && uid === selectedStudent.id) studentStatus.absent = true;
                     }
                     if (!estInscrit && st === 'present') {
                         nbInvites++;
+                        if (selectedStudent && uid === selectedStudent.id) studentStatus.guest = true;
                     }
                 });
             }
-            return { reel: inscritsBase - nbAbsents + nbInvites, waitingCount };
+
+            return {
+                reel: inscritsBase - nbAbsents + nbInvites,
+                waitingCount,
+                studentStatus // On retourne l'objet statut
+            };
         };
 
-        // 1. Récurrents (Standard)
+        // 1. Traitement des Groupes Récurrents
         groupes.forEach(groupe => {
             const dateDuCours = ajouterJours(lundiActuel, groupe.jour - 1);
 
+            // Vérification Dates de saison
             if (groupe.dateDebut && groupe.dateFin) {
                 const debut = groupe.dateDebut.toDate ? groupe.dateDebut.toDate() : new Date(groupe.dateDebut);
                 const fin = groupe.dateFin.toDate ? groupe.dateFin.toDate() : new Date(groupe.dateFin);
-                debut.setHours(0, 0, 0, 0);
-                fin.setHours(23, 59, 59, 999);
+                debut.setHours(0, 0, 0, 0); fin.setHours(23, 59, 59, 999);
                 if (dateDuCours < debut || dateDuCours > fin) return;
             }
 
             const dateStr = dateDuCours.toLocaleDateString('fr-CA');
             const estAnnule = exceptions.some(ex => ex.groupeId === groupe.id && ex.date === dateStr && ex.type === "annulation");
-            const inscritsCount = eleves.filter(e => e.enrolledGroupIds && e.enrolledGroupIds.includes(groupe.id)).length;
 
-            // Appel stats pour standard (isException = false)
+            const inscritsCount = eleves.filter(e => e.enrolledGroupIds && e.enrolledGroupIds.includes(groupe.id)).length;
             const stats = getStatsSeance(groupe.id, dateStr, false, inscritsCount);
+
+            // Calcul si Passé
+            const [h, min] = groupe.heureDebut.split(':').map(Number);
+            const sessionEnd = new Date(dateDuCours);
+            sessionEnd.setHours(h, min + (groupe.duree || 60), 0, 0);
+            const isPast = now > sessionEnd;
 
             listeFinale.push({
                 ...groupe,
@@ -134,11 +183,13 @@ export default function Planning() {
                 estAnnule,
                 inscritsCount,
                 presentCount: stats.reel,
-                waitingCount: stats.waitingCount
+                waitingCount: stats.waitingCount,
+                studentStatus: stats.studentStatus,
+                isPast
             });
         });
 
-        // 2. Ajouts (Séances exceptionnelles) - CORRECTION MAJEURE ICI
+        // 2. Traitement des Séances Exceptionnelles (Ajouts)
         const dimancheFinStr = ajouterJours(lundiActuel, 6).toLocaleDateString('fr-CA');
         const lundiDebutStr = lundiActuel.toLocaleDateString('fr-CA');
         const ajoutsSemaine = exceptions.filter(ex => ex.type === "ajout" && ex.date >= lundiDebutStr && ex.date <= dimancheFinStr);
@@ -146,32 +197,38 @@ export default function Planning() {
         ajoutsSemaine.forEach(ajout => {
             const [y, m, d] = ajout.date.split('-').map(Number);
             const dateReelle = new Date(y, m - 1, d);
-
-            // Appel stats pour exception (isException = true). On passe ajout.id comme identifiant.
             const stats = getStatsSeance(ajout.id, ajout.date, true, 0);
 
+            // Calcul si Passé
+            const [h, min] = ajout.newSessionData.heureDebut.split(':').map(Number);
+            const sessionEnd = new Date(dateReelle);
+            sessionEnd.setHours(h, min + (ajout.newSessionData.duree || 60), 0, 0);
+            const isPast = now > sessionEnd;
+
             listeFinale.push({
-                id: ajout.id, // L'ID du "groupe" devient l'ID du document exception
-                ...ajout.newSessionData, // Spread (nom, theme, places, etc.)
+                id: ajout.id,
+                ...ajout.newSessionData,
                 dateReelle,
                 type: 'ajout',
                 estAnnule: false,
                 inscritsCount: 0,
                 presentCount: stats.reel,
                 waitingCount: stats.waitingCount,
-                originalExceptionId: ajout.id
+                originalExceptionId: ajout.id,
+                studentStatus: stats.studentStatus,
+                isPast
             });
         });
 
+        // Tri chronologique
         listeFinale.sort((a, b) => a.dateReelle - b.dateReelle || a.heureDebut.localeCompare(b.heureDebut));
         setCoursAffiches(listeFinale);
     };
 
-    useEffect(() => { if (!loading) calculerPlanningDeLaSemaine(); }, [lundiActuel, donneesBrutes, loading]);
-
+    // --- ACTIONS NAVIGATION ---
     const changerSemaine = (offset) => setLundiActuel(prev => ajouterJours(prev, offset * 7));
 
-    // --- GESTION DU CLIC SUR LA GRILLE ---
+    // --- ACTIONS CLIC GRILLE ---
     const handleCellClick = (dateJour, heureInt) => {
         const heureStr = `${heureInt.toString().padStart(2, '0')}:00`;
         setChoixCreation({ date: dateJour, heure: heureStr });
@@ -212,10 +269,10 @@ export default function Planning() {
     return (
         <div className="max-w-7xl mx-auto p-2 md:p-6">
 
-            {/* --- MODALE DE CHOIX CRÉATION --- */}
+            {/* --- MODALE DE CHOIX CRÉATION (Clic grille) --- */}
             {choixCreation && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={() => setChoixCreation(null)}>
-                    <div className="bg-white p-6 rounded-2xl shadow-2xl w-80 text-center space-y-6 animate-in fade-in zoom-in-95" onClick={e => e.stopPropagation()}>
+                    <div className="bg-white p-6 rounded-2xl shadow-2xl w-80 text-center space-y-6" onClick={e => e.stopPropagation()}>
                         <div>
                             <h3 className="font-bold text-xl text-gray-800 font-playfair mb-1">Ajouter un créneau</h3>
                             <p className="text-sm text-gray-500 font-medium capitalize">
@@ -244,10 +301,27 @@ export default function Planning() {
 
             {/* --- HEADER --- */}
             <div className="flex flex-col md:flex-row items-center justify-between mb-6 bg-white p-4 rounded-xl shadow-sm border border-gray-100 sticky top-0 z-20">
-                <div className="flex items-center gap-3 w-full md:w-auto justify-between md:justify-start">
+                <div className="flex flex-col gap-1 w-full md:w-auto">
                     <h2 className="text-xl md:text-2xl font-playfair font-bold text-gray-800 whitespace-nowrap">
                         {formaterDateSimple(lundiActuel)} - {formaterDateSimple(dimancheFinSemaine)}
                     </h2>
+
+                    {/* SÉLECTEUR DE VUE (PROF ou ÉLÈVE) */}
+                    <div className="flex items-center gap-2">
+                        <span className="text-xs font-bold text-gray-400 uppercase">Vue :</span>
+                        <select
+                            value={selectedStudentId}
+                            onChange={(e) => setSelectedStudentId(e.target.value)}
+                            className={`text-xs border rounded px-2 py-1 outline-none font-bold cursor-pointer transition ${selectedStudentId ? 'bg-purple-50 text-purple-800 border-purple-200' : 'bg-white text-gray-600 border-gray-300'}`}
+                        >
+                            <option value="">👨‍🏫 Mon Planning Prof</option>
+                            <optgroup label="👁️ Voir en tant que...">
+                                {donneesBrutes.eleves.map(e => (
+                                    <option key={e.id} value={e.id}>{e.nom} {e.prenom}</option>
+                                ))}
+                            </optgroup>
+                        </select>
+                    </div>
                 </div>
 
                 <div className="flex items-center bg-gray-100 rounded-lg p-1 mt-3 md:mt-0">
@@ -263,11 +337,40 @@ export default function Planning() {
                     const taux = groupe.presentCount / groupe.places;
                     const estComplet = taux >= 1;
 
+                    // Style de base Mobile
+                    let borderClass = 'border-teal-500';
+                    let opacityClass = '';
+
+                    if (groupe.estAnnule) {
+                        borderClass = 'border-red-400';
+                        opacityClass = 'opacity-75';
+                    } else if (groupe.isPast) {
+                        borderClass = 'border-gray-400';
+                        opacityClass = 'opacity-60 grayscale'; // GRISÉ SI PASSÉ
+                    } else if (estComplet) {
+                        borderClass = 'border-red-500';
+                    }
+
+                    // Badge spécial si vue élève
+                    let mobileBadge = null;
+                    if (selectedStudentId && !groupe.estAnnule) {
+                        const s = groupe.studentStatus;
+                        if (s.enrolled) {
+                            if (s.absent) mobileBadge = <span className="text-[10px] bg-orange-100 text-orange-700 px-2 py-0.5 rounded border border-orange-200 font-bold ml-2">ABSENT</span>;
+                            else mobileBadge = <span className="text-[10px] bg-teal-100 text-teal-700 px-2 py-0.5 rounded border border-teal-200 font-bold ml-2">INSCRIT</span>;
+                        } else if (s.guest) {
+                            mobileBadge = <span className="text-[10px] bg-purple-100 text-purple-700 px-2 py-0.5 rounded border border-purple-200 font-bold ml-2">RÉSERVÉ</span>;
+                        } else if (s.waiting) {
+                            mobileBadge = <span className="text-[10px] bg-orange-50 text-orange-600 px-2 py-0.5 rounded border border-orange-100 font-bold ml-2">ATTENTE {s.waitingPos}</span>;
+                        }
+                    }
+
                     return (
-                        <div key={groupe.id + groupe.dateReelle.toString()} className={`bg-white rounded-lg shadow border-l-4 p-4 flex justify-between items-center ${groupe.estAnnule ? 'border-red-400 opacity-75' : (estComplet ? 'border-red-500' : 'border-teal-500')}`}>
+                        <div key={groupe.id + groupe.dateReelle.toString()} className={`bg-white rounded-lg shadow border-l-4 p-4 flex justify-between items-center ${borderClass} ${opacityClass}`}>
                             <div>
-                                <div className="text-xs uppercase text-gray-400 font-bold mb-1">
+                                <div className="text-xs uppercase text-gray-400 font-bold mb-1 flex items-center">
                                     {JOURS[groupe.dateReelle.getDay()]} {groupe.dateReelle.getDate()} • {groupe.heureDebut}
+                                    {mobileBadge}
                                 </div>
                                 <h3 className={`font-bold text-lg ${groupe.estAnnule ? 'line-through text-gray-400' : 'text-gray-800'}`}>
                                     {groupe.nom}
@@ -279,7 +382,7 @@ export default function Planning() {
                                     {groupe.estAnnule ? (
                                         <span className="text-red-500 font-bold">ANNULÉ</span>
                                     ) : (
-                                        <span className={`${estComplet ? 'text-red-600 font-bold' : 'text-gray-600'}`}>
+                                        <span className={`${estComplet && !groupe.isPast ? 'text-red-600 font-bold' : 'text-gray-600'}`}>
                                             👥 {groupe.presentCount} / {groupe.places}
                                         </span>
                                     )}
@@ -336,13 +439,54 @@ export default function Planning() {
                                 {/* CARTES COURS */}
                                 {coursDuJour.map(groupe => {
                                     const stylePos = getCardStyle(groupe.heureDebut, groupe.duree);
-                                    const taux = groupe.presentCount / groupe.places;
-                                    const estComplet = taux >= 1;
+                                    const isFull = groupe.presentCount >= groupe.places;
 
-                                    let containerClass = "bg-teal-50 border-teal-500 hover:bg-teal-100 text-teal-900";
-                                    if (groupe.estAnnule) containerClass = "bg-gray-100 border-gray-400 opacity-60 text-gray-500";
-                                    else if (groupe.type === 'ajout') containerClass = "bg-purple-50 border-purple-500 hover:bg-purple-100 text-purple-900";
-                                    else if (estComplet) containerClass = "bg-red-50 border-red-500 hover:bg-red-100 text-red-900";
+                                    // --- LOGIQUE COULEURS & STYLES ---
+                                    let containerClass = "hover:shadow-md cursor-pointer border-l-4 transition-all opacity-95 hover:opacity-100 flex flex-col justify-between";
+                                    let titleColor = "text-gray-700";
+
+                                    if (groupe.estAnnule) {
+                                        containerClass += " bg-gray-100 border-gray-400 opacity-60 text-gray-500";
+                                    } else if (groupe.isPast) {
+                                        // GRISÉ si passé (mais toujours cliquable pour le prof)
+                                        containerClass += " bg-gray-100 border-gray-300 opacity-70 grayscale";
+                                        titleColor = "text-gray-500";
+                                    } else {
+                                        // MODE ÉLÈVE SÉLECTIONNÉ : On imite la vue élève
+                                        if (selectedStudentId) {
+                                            if (groupe.type === 'ajout') containerClass += " bg-purple-50/50 border-purple-200"; // Violet base
+                                            else if (isFull) containerClass += " bg-red-50/50 border-red-200"; // Rouge base
+                                            else containerClass += " bg-teal-50/30 border-teal-200"; // Vert base
+                                        }
+                                        // MODE PROF STANDARD : Couleurs par défaut
+                                        else {
+                                            if (groupe.type === 'ajout') { containerClass += " bg-purple-50 border-purple-500 hover:bg-purple-100"; titleColor = "text-purple-900"; }
+                                            else if (isFull) { containerClass += " bg-red-50 border-red-500 hover:bg-red-100"; titleColor = "text-red-900"; }
+                                            else { containerClass += " bg-teal-50 border-teal-500 hover:bg-teal-100"; titleColor = "text-teal-900"; }
+                                        }
+                                    }
+
+                                    // OVERLAYS (Uniquement si un élève est sélectionné)
+                                    let topBadge = null;
+                                    let centerOverlay = null;
+
+                                    if (selectedStudentId && !groupe.estAnnule) {
+                                        const s = groupe.studentStatus;
+                                        // On réplique la logique StudentPortal
+                                        if (s.enrolled) {
+                                            if (s.absent) centerOverlay = <div className="text-orange-600/80 bg-orange-100/90 px-2 py-1 rounded font-black text-xs -rotate-12 border-2 border-orange-300">ABSENT</div>;
+                                            else centerOverlay = <div className="bg-white px-2 py-1 rounded border-2 border-teal-600 shadow-sm flex items-center gap-1 z-10"><span className="text-teal-700 font-black text-xs">INSCRIT</span></div>;
+                                        } else if (s.guest) {
+                                            centerOverlay = <div className="bg-white px-2 py-1 rounded border-2 border-purple-600 shadow-sm flex items-center gap-1 z-10"><span className="text-purple-700 font-black text-xs">RÉSERVÉ</span></div>;
+                                        } else if (s.waiting) {
+                                            centerOverlay = <div className="bg-orange-100 text-orange-800 font-bold px-2 py-1 rounded text-xs z-10 border border-orange-200">File d'attente :  {s.waitingPos}e</div>;
+                                        }
+                                    }
+
+                                    // Badge "Spécial" (pour mode prof ou élève)
+                                    if (groupe.type === 'ajout' && !groupe.isPast && !groupe.estAnnule && !centerOverlay) {
+                                        topBadge = <span className="text-[9px] font-bold text-purple-700 bg-white/80 px-1 rounded">SPÉCIAL</span>;
+                                    }
 
                                     return (
                                         <div
@@ -353,13 +497,19 @@ export default function Planning() {
                                             title={`${groupe.nom} (${groupe.heureDebut})`}
                                         >
                                             <div>
-                                                <div className="font-bold text-xs md:text-sm leading-tight truncate">
-                                                    {groupe.estAnnule && "🚫 "}{groupe.nom}
+                                                <div className="flex justify-between items-start">
+                                                    {/* Badge Spécial en haut à droite si nécessaire */}
+                                                    <div className="w-full">
+                                                        <div className={`font-bold text-xs md:text-sm leading-tight truncate ${titleColor}`}>
+                                                            {groupe.estAnnule && "🚫 "}{groupe.nom}
+                                                        </div>
+                                                        <div className="text-[10px] opacity-80 font-mono mt-0.5">
+                                                            {groupe.heureDebut.replace(':', 'h')} - {calculerHeureFin(groupe.heureDebut, groupe.duree)}
+                                                        </div>
+                                                    </div>
+                                                    {topBadge}
                                                 </div>
-                                                <div className="text-[10px] opacity-80 font-mono mt-0.5">
-                                                    {groupe.heureDebut.replace(':', 'h')} - {calculerHeureFin(groupe.heureDebut, groupe.duree)}
-                                                </div>
-                                                {/* Petit badge thème si existe */}
+                                                {/* Petit badge thème */}
                                                 {groupe.theme && !groupe.estAnnule && (
                                                     <div className="text-[9px] italic mt-1 truncate opacity-90 border-t border-black/5 pt-0.5">
                                                         "{groupe.theme}"
@@ -367,10 +517,17 @@ export default function Planning() {
                                                 )}
                                             </div>
 
+                                            {/* OVERLAY STATUT ÉLÈVE */}
+                                            {centerOverlay && (
+                                                <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                                                    {centerOverlay}
+                                                </div>
+                                            )}
+
                                             {!groupe.estAnnule && (
-                                                <div className="flex justify-between items-end mt-1 pt-1 border-t border-black/5">
+                                                <div className="flex justify-between items-end mt-1 pt-1 border-t border-black/5 relative z-0">
                                                     <div className="flex items-center gap-1">
-                                                        <span className={`text-xs font-extrabold ${estComplet ? 'text-red-600' : 'opacity-100'}`}>
+                                                        <span className={`text-xs font-extrabold ${isFull && !groupe.isPast ? 'text-red-600' : 'opacity-100'}`}>
                                                             👥 {groupe.presentCount}/{groupe.places}
                                                         </span>
                                                     </div>
