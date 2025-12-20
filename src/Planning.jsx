@@ -165,7 +165,11 @@ export default function Planning() {
             }
 
             const dateStr = dateDuCours.toLocaleDateString('fr-CA');
-            const estAnnule = exceptions.some(ex => ex.groupeId === groupe.id && ex.date === dateStr && ex.type === "annulation");
+
+            // MODIFICATION ICI : Récupération de l'objet exception complet
+            const exceptionAnnulation = exceptions.find(ex => ex.groupeId === groupe.id && ex.date === dateStr && ex.type === "annulation");
+            const estAnnule = !!exceptionAnnulation;
+            const motifAnnulation = exceptionAnnulation?.motif || "";
 
             const inscritsCount = eleves.filter(e => e.enrolledGroupIds && e.enrolledGroupIds.includes(groupe.id)).length;
             const stats = getStatsSeance(groupe.id, dateStr, false, inscritsCount);
@@ -181,6 +185,7 @@ export default function Planning() {
                 dateReelle: dateDuCours,
                 type: 'standard',
                 estAnnule,
+                motifAnnulation, // On passe le motif
                 inscritsCount,
                 presentCount: stats.reel,
                 waitingCount: stats.waitingCount,
@@ -199,6 +204,11 @@ export default function Planning() {
             const dateReelle = new Date(y, m - 1, d);
             const stats = getStatsSeance(ajout.id, ajout.date, true, 0);
 
+            // Vérif si annulé (même une séance exceptionnelle peut être annulée via GestionSeance)
+            const exceptionAnnulation = exceptions.find(ex => ex.groupeId === ajout.id && ex.date === ajout.date && ex.type === "annulation");
+            const estAnnule = !!exceptionAnnulation;
+            const motifAnnulation = exceptionAnnulation?.motif || "";
+
             // Calcul si Passé
             const [h, min] = ajout.newSessionData.heureDebut.split(':').map(Number);
             const sessionEnd = new Date(dateReelle);
@@ -210,7 +220,8 @@ export default function Planning() {
                 ...ajout.newSessionData,
                 dateReelle,
                 type: 'ajout',
-                estAnnule: false,
+                estAnnule,
+                motifAnnulation, // On passe le motif
                 inscritsCount: 0,
                 presentCount: stats.reel,
                 waitingCount: stats.waitingCount,
@@ -378,6 +389,13 @@ export default function Planning() {
                                 {/* Affichage Thème Mobile */}
                                 {groupe.theme && <div className="text-xs text-purple-600 italic mb-1">"{groupe.theme}"</div>}
 
+                                {/* MODIFICATION : Affichage Motif Annulation Mobile */}
+                                {groupe.estAnnule && groupe.motifAnnulation && (
+                                    <div className="text-xs text-red-500 font-bold italic mt-1">
+                                        "{groupe.motifAnnulation}"
+                                    </div>
+                                )}
+
                                 <div className="text-sm mt-1">
                                     {groupe.estAnnule ? (
                                         <span className="text-red-500 font-bold">ANNULÉ</span>
@@ -506,6 +524,12 @@ export default function Planning() {
                                                         <div className="text-[10px] opacity-80 font-mono mt-0.5">
                                                             {groupe.heureDebut.replace(':', 'h')} - {calculerHeureFin(groupe.heureDebut, groupe.duree)}
                                                         </div>
+                                                        {/* MODIFICATION : Affichage Motif Annulation Desktop */}
+                                                        {groupe.estAnnule && groupe.motifAnnulation && (
+                                                            <div className="text-[10px] italic font-semibold text-gray-500 mt-1 leading-tight border-t border-gray-300 pt-0.5">
+                                                                "{groupe.motifAnnulation}"
+                                                            </div>
+                                                        )}
                                                     </div>
                                                     {topBadge}
                                                 </div>

@@ -143,9 +143,15 @@ export default function StudentPortal() {
 
             tousLesCreneaux.forEach(groupe => {
                 let estAnnule = false;
+                let motifAnnulation = "";
 
                 if (!groupe.isExceptionnel) {
-                    estAnnule = exceptions.some(ex => ex.groupeId === groupe.id && ex.date === dateStr && ex.type === "annulation");
+                    // MODIF ICI : On récupère l'objet exception complet pour avoir le motif
+                    const exceptionAnnulation = exceptions.find(ex => ex.groupeId === groupe.id && ex.date === dateStr && ex.type === "annulation");
+                    if (exceptionAnnulation) {
+                        estAnnule = true;
+                        motifAnnulation = exceptionAnnulation.motif || "";
+                    }
                 }
 
                 const seanceId = groupe.isExceptionnel ? groupe.id : `${dateStr}_${groupe.id}`;
@@ -206,7 +212,8 @@ export default function StudentPortal() {
                     donneesGlobales,
                     isExceptionnel: !!groupe.isExceptionnel,
                     estAnnule,
-                    isPast // On transmet l'info
+                    motifAnnulation, // On transmet le motif
+                    isPast
                 });
             });
         }
@@ -335,6 +342,11 @@ export default function StudentPortal() {
                                                         <div>
                                                             <div className="font-bold text-gray-500 line-through decoration-gray-400">{sess.groupe.nom}</div>
                                                             <div className="text-xs font-mono text-gray-400">{sess.groupe.heureDebut}</div>
+                                                            {sess.motifAnnulation && (
+                                                                <div className="text-xs font-bold text-red-500 mt-1 italic">
+                                                                    "{sess.motifAnnulation}"
+                                                                </div>
+                                                            )}
                                                         </div>
                                                         <span className="text-xs font-black uppercase text-red-500 border border-red-200 px-2 py-1 rounded bg-white">ANNULÉ</span>
                                                     </div>
@@ -443,9 +455,15 @@ export default function StudentPortal() {
                                                     style={stylePos}
                                                 >
                                                     <div className="text-xs font-bold text-gray-400 line-through decoration-gray-400 mb-1">{sess.groupe.nom}</div>
-                                                    <div className="bg-white border border-red-200 text-red-500 font-black text-xs px-2 py-1 rounded shadow-sm transform -rotate-6">
+                                                    <div className="bg-white border border-red-200 text-red-500 font-black text-xs px-2 py-1 rounded shadow-sm transform -rotate-6 mb-1">
                                                         ANNULÉ
                                                     </div>
+                                                    {/* Affichage Motif Desktop */}
+                                                    {sess.motifAnnulation && (
+                                                        <div className="text-[10px] text-gray-500 text-center leading-tight italic px-1">
+                                                            {sess.motifAnnulation}
+                                                        </div>
+                                                    )}
                                                 </div>
                                             );
                                         }

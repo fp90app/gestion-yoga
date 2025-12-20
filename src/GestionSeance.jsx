@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { db } from './firebase';
 import {
     collection,
@@ -42,6 +42,7 @@ export default function GestionSeance({ groupe, date, onClose, onEdit }) {
 
     // État pour la modale de confirmation
     const [confirmConfig, setConfirmConfig] = useState(null);
+    const motifRef = useRef(""); // Référence pour le motif d'annulation
 
     // --- SÉLECTEURS ---
     const [addMode, setAddMode] = useState(null);
@@ -107,7 +108,6 @@ export default function GestionSeance({ groupe, date, onClose, onEdit }) {
                 : tous.filter(e => e.enrolledGroupIds && e.enrolledGroupIds.includes(groupe.id));
 
             // B. Identification des INVITÉS
-            // On prend ceux marqués 'present' qui ne sont PAS titulaires
             const presentIds = Object.keys(savedStatus).filter(k => savedStatus[k] === 'present');
             const guestIds = presentIds.filter(pid => !listeInscrits.some(i => i.id === pid));
 
@@ -125,14 +125,7 @@ export default function GestionSeance({ groupe, date, onClose, onEdit }) {
             setReplacementLinks(savedReplacementLinks);
             setGuestOrigins(savedGuestOrigins);
 
-            // Initialisation des statuts locaux
-            // Pour un titulaire, s'il n'a pas de statut sauvegardé, il est "undefined" (donc présent par défaut dans l'affichage)
             const finalStatus = { ...savedStatus };
-
-            // On s'assure que tout le monde a un statut pour l'UI, même si c'est implicite
-            // Note: On ne force pas 'present' dans la DB ici, juste dans l'état local pour l'affichage si besoin
-            // Mais pour le calcul, on utilisera la logique "Pas absent = Présent"
-
             setStatuses(finalStatus);
             setInitialStatus(JSON.parse(JSON.stringify(finalStatus)));
 
@@ -149,7 +142,7 @@ export default function GestionSeance({ groupe, date, onClose, onEdit }) {
     const triggerConfirm = (title, content, action, colorClass = "bg-red-500", confirmLabel = "Confirmer") => {
         setConfirmConfig({
             title,
-            content: <p className="text-gray-600 text-sm">{content}</p>,
+            content, // Content peut maintenant être du JSX
             colorClass,
             confirmLabel,
             onConfirm: async () => {
@@ -160,16 +153,39 @@ export default function GestionSeance({ groupe, date, onClose, onEdit }) {
     };
 
     const handleAnnulerUnique = async () => {
-        triggerConfirm("Annuler la séance ?", "Les élèves ne verront plus ce cours.", async () => {
+        motifRef.current = ""; // Reset du motif
+        // On passe du JSX dans le content pour inclure l'input
+        const contentJsx = (
+            <div className="space-y-3">
+                <p className="text-gray-600 text-sm">Les élèves ne verront plus ce cours.</p>
+                <div>
+                    <label className="block text-xs font-bold text-gray-500 mb-1">Motif (optionnel)</label>
+                    <input
+                        type="text"
+                        placeholder="ex: Vacances, Maladie, Férié..."
+                        className="w-full border p-2 rounded text-sm focus:ring-2 focus:ring-red-200 outline-none"
+                        onChange={(e) => motifRef.current = e.target.value}
+                    />
+                </div>
+            </div>
+        );
+
+        triggerConfirm("Annuler la séance ?", contentJsx, async () => {
             setLoading(true);
-            await addDoc(collection(db, "exceptions"), { date: dateStr, groupeId: groupe.id, type: "annulation" });
+            await addDoc(collection(db, "exceptions"), {
+                date: dateStr,
+                groupeId: groupe.id,
+                type: "annulation",
+                motif: motifRef.current // Enregistrement du motif
+            });
             await chargerDonnees();
             toast.success("Séance annulée");
         }, "bg-red-600", "Annuler la séance");
     };
 
     const handleRetablir = async () => {
-        triggerConfirm("Rétablir la séance ?", "Le cours réapparaîtra dans le planning.", async () => {
+        // Pour rétablir, on passe juste du texte simple
+        triggerConfirm("Rétablir la séance ?", <p className="text-gray-600 text-sm">Le cours réapparaîtra dans le planning.</p>, async () => {
             setLoading(true);
             await deleteDoc(doc(db, "exceptions", annulationDocId));
             await chargerDonnees();
@@ -179,7 +195,7 @@ export default function GestionSeance({ groupe, date, onClose, onEdit }) {
 
     const handleSupprimerDefinitif = async () => {
         const msg = isExceptionnel ? "Supprimer cette séance unique ?" : "Supprimer TOUT le cours récurrent ?";
-        triggerConfirm("Suppression Définitive", msg, async () => {
+        triggerConfirm("Suppression Définitive", <p className="text-gray-600 text-sm">{msg}</p>, async () => {
             setLoading(true);
             const collectionName = isExceptionnel ? "exceptions" : "groupes";
             const docId = isExceptionnel ? (groupe.originalExceptionId || groupe.id) : groupe.id;
@@ -192,14 +208,10 @@ export default function GestionSeance({ groupe, date, onClose, onEdit }) {
     // --- LOGIQUE PRESENCE ---
     const toggleStatus = (eleveId) => {
         const currentStatus = statuses[eleveId];
-        // Si undefined ou present -> devient absent
-        // Si absent -> devient present
         const isCurrentlyAbsent = currentStatus === 'absent' || currentStatus === 'absent_announced';
         const newStatus = isCurrentlyAbsent ? 'present' : 'absent';
 
         if (newStatus === 'present') {
-            // Vérification capacité (Simplifiée pour Admin : alerte seulement)
-            // On recalcule le total avec la modif
             const nbPresents = inscrits.filter(i => {
                 if (i.id === eleveId) return true;
                 const s = statuses[i.id];
@@ -212,7 +224,6 @@ export default function GestionSeance({ groupe, date, onClose, onEdit }) {
                 if (!confirm(`⚠️ Cours complet (${placesTotales} places).\nAjouter en SURNOMBRE ?`)) return;
             }
 
-            // Si on revient, on casse le lien de remplacement s'il existait
             const guestIdLinked = Object.keys(replacementLinks).find(key => replacementLinks[key] === eleveId);
             if (guestIdLinked) {
                 const newLinks = { ...replacementLinks };
@@ -236,7 +247,7 @@ export default function GestionSeance({ groupe, date, onClose, onEdit }) {
 
         if (addMode === 'permanent') {
             if (isExceptionnel) { toast.error("Impossible sur séance unique."); return; }
-            triggerConfirm("Inscription Annuelle", `Inscrire ${eleve.prenom} définitivement à ce créneau ?`, async () => {
+            triggerConfirm("Inscription Annuelle", <p className="text-gray-600 text-sm">Inscrire {eleve.prenom} définitivement à ce créneau ?</p>, async () => {
                 await updateDoc(doc(db, "eleves", eleve.id), { enrolledGroupIds: arrayUnion(groupe.id) });
                 chargerDonnees();
                 setAddMode(null);
@@ -245,7 +256,6 @@ export default function GestionSeance({ groupe, date, onClose, onEdit }) {
             return;
         }
 
-        // Gestion File d'attente vers Guest
         const vientDeFileAttente = waitingList.find(w => w.id === eleve.id);
         if (vientDeFileAttente) {
             setWaitingList(prev => prev.filter(w => w.id !== eleve.id));
@@ -269,7 +279,7 @@ export default function GestionSeance({ groupe, date, onClose, onEdit }) {
 
     const desinscrireTitulaire = (eleve) => {
         triggerConfirm("Désinscrire ce titulaire ?",
-            `Cela retirera ${eleve.prenom} de la liste des inscrits à l'année pour ce cours.`,
+            <p className="text-gray-600 text-sm">Cela retirera {eleve.prenom} de la liste des inscrits à l'année pour ce cours.</p>,
             async () => {
                 const batch = writeBatch(db);
                 batch.update(doc(db, "eleves", eleve.id), { enrolledGroupIds: arrayRemove(groupe.id) });
@@ -293,7 +303,7 @@ export default function GestionSeance({ groupe, date, onClose, onEdit }) {
         const origine = guestOrigins[eleveId];
         const msg = origine === 'waiting' ? "Retourner en file d'attente ?" : "Retirer de la séance ?";
 
-        triggerConfirm("Retirer l'invité ?", msg, async () => {
+        triggerConfirm("Retirer l'invité ?", <p className="text-gray-600 text-sm">{msg}</p>, async () => {
             const eleve = invites.find(i => i.id === eleveId);
             setInvites(prev => prev.filter(e => e.id !== eleveId));
 
@@ -398,16 +408,30 @@ export default function GestionSeance({ groupe, date, onClose, onEdit }) {
                 }
 
                 if (change !== 0) {
-                    batch.update(doc(db, "eleves", eid), { absARemplacer: increment(change) });
-                    const histRef = doc(collection(db, "eleves", eid, "history"));
-                    batch.set(histRef, {
-                        date: serverTimestamp(),
-                        delta: change,
-                        motif: `Modif Prof : ${groupe.nom}`,
-                        seanceId: seanceId,
-                        groupeNom: groupe.nom,
-                        seanceDate: dateStr
-                    });
+                    if (isExceptionnel) {
+                        // MODIFICATION : Pas d'impact sur le solde si séance exceptionnelle
+                        const histRef = doc(collection(db, "eleves", eid, "history"));
+                        batch.set(histRef, {
+                            date: serverTimestamp(),
+                            delta: 0, // Delta 0 pour info seulement
+                            motif: `Modif Prof (Exceptionnel) : ${groupe.nom}`,
+                            seanceId: seanceId,
+                            groupeNom: groupe.nom,
+                            seanceDate: dateStr
+                        });
+                    } else {
+                        // Comportement STANDARD
+                        batch.update(doc(db, "eleves", eid), { absARemplacer: increment(change) });
+                        const histRef = doc(collection(db, "eleves", eid, "history"));
+                        batch.set(histRef, {
+                            date: serverTimestamp(),
+                            delta: change,
+                            motif: `Modif Prof : ${groupe.nom}`,
+                            seanceId: seanceId,
+                            groupeNom: groupe.nom,
+                            seanceDate: dateStr
+                        });
+                    }
                 }
             });
 
@@ -420,9 +444,6 @@ export default function GestionSeance({ groupe, date, onClose, onEdit }) {
 
     // --- RENDER ---
     const capacity = typeof groupe.places === 'number' ? groupe.places : 10;
-
-    // CORRECTION DU CALCUL DES PRÉSENTS
-    // Un titulaire est présent s'il n'est PAS absent (donc 'present' ou undefined)
     const nbTitulairesPresents = inscrits.filter(i => {
         const s = statuses[i.id];
         return s !== 'absent' && s !== 'absent_announced';
@@ -551,7 +572,6 @@ export default function GestionSeance({ groupe, date, onClose, onEdit }) {
                             if (slot.type === 'titulaire') {
                                 const eleve = slot.student;
                                 const status = statuses[eleve.id];
-                                // CORRECTION ICI : Si status est undefined, on considère présent
                                 const isPresent = status === 'present' || status === undefined;
                                 const replacementId = Object.keys(replacementLinks).find(k => replacementLinks[k] === eleve.id);
                                 const replacement = replacementId ? invites.find(i => i.id === replacementId) : null;
@@ -626,7 +646,7 @@ export default function GestionSeance({ groupe, date, onClose, onEdit }) {
                             <div className="flex gap-2">
                                 <select className="text-xs border-orange-200 rounded-lg bg-white py-2 pl-2 pr-8 outline-none" value={selectedWaitlistId} onChange={e => setSelectedWaitlistId(e.target.value)}>
                                     <option value="">+ Ajouter</option>
-                                    {allStudents.filter(s => !inscrits.find(i => i.id === s.id) && !invites.find(i => i.id === s.id) && !waitingList.find(w => w.id === s.id)).map(s => <option key={s.id} value={s.id}>{s.prenom} {s.nom}</option>)}
+                                    {allStudents.filter(s => !inscrits.find(i => i.id === s.id) && !invites.find(i => i.id === s.id) && !waitingList.find(w => w.id === s.id)).map(s => <option key={s.id} value={s.id}>{s.nom} {s.prenom}</option>)}
                                 </select>
                                 <button onClick={ajouterAuWaitingList} disabled={!selectedWaitlistId} className="bg-orange-400 text-white px-3 rounded-lg font-bold text-lg hover:bg-orange-500 shadow-sm">+</button>
                             </div>

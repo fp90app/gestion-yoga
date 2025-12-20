@@ -52,9 +52,6 @@ export default function StudentSessionDetail({ session, student, onClose, onUpda
 
     const capacity = typeof groupe.places === 'number' ? groupe.places : 10;
 
-    // --- CORRECTION DU CALCUL DES PRÉSENTS (BUG FIX) ---
-    // Avant : on comptait seulement ceux avec status === 'present'
-    // Maintenant : Pour les titulaires, on compte ceux qui NE SONT PAS 'absent'
     const nbTitulairesPresents = inscrits.filter(t => {
         const s = attendanceData.status?.[t.id];
         return s !== 'absent' && s !== 'absent_announced';
@@ -88,40 +85,46 @@ export default function StudentSessionDetail({ session, student, onClose, onUpda
         const solde = student.absARemplacer || 0;
         let config = { onConfirm: callback };
 
+        // Helper pour afficher le solde seulement si ce n'est PAS exceptionnel
+        const renderCostInfo = (cout, type = "cost") => {
+            if (isExceptionnel) return <p className="text-gray-600 text-sm italic">Cette séance n'impacte pas votre solde de récupération.</p>;
+
+            const nouveauSolde = type === "cost" ? solde - cout : solde + cout;
+            const labelCout = type === "cost" ? `-${cout}` : `+${cout}`;
+            const colorCout = type === "cost" ? "text-red-600" : "text-green-600";
+
+            return (
+                <DetailBox>
+                    <Row label="Solde actuel :" value={solde} color="text-gray-500" />
+                    <Row label={type === "cost" ? "Coût :" : "Remboursement :"} value={labelCout} color={colorCout} bold />
+                    <div className="border-t pt-2 mt-2"><Row label="Nouveau solde :" value={nouveauSolde} bold /></div>
+                </DetailBox>
+            );
+        };
+
         if (actionType === 'book') {
             config.title = "Réserver ce cours ?";
             config.colorClass = "bg-teal-600";
-            config.confirmLabel = "Confirmer (-1 séance)";
-            config.content = (
-                <DetailBox>
-                    <Row label="Solde actuel :" value={solde} color="text-gray-500" />
-                    <Row label="Coût :" value="-1" color="text-red-600" bold />
-                    <div className="border-t pt-2 mt-2"><Row label="Nouveau solde :" value={solde - 1} bold /></div>
-                </DetailBox>
-            );
+            config.confirmLabel = isExceptionnel ? "Confirmer la réservation" : "Confirmer (-1 séance)";
+            config.content = renderCostInfo(1, "cost");
+
         } else if (actionType === 'cancel_booking') {
             config.title = "Annuler la réservation ?";
             config.colorClass = "bg-red-500";
             config.confirmLabel = "Oui, annuler";
-            config.content = (
-                <DetailBox>
-                    <Row label="Solde actuel :" value={solde} color="text-gray-500" />
-                    <Row label="Remboursement :" value="+1" color="text-green-600" bold />
-                    <div className="border-t pt-2 mt-2"><Row label="Nouveau solde :" value={solde + 1} bold /></div>
-                </DetailBox>
-            );
+            config.content = renderCostInfo(1, "refund");
+
         } else if (actionType === 'signal_absence') {
             config.title = "Signaler votre absence ?";
             config.colorClass = "bg-orange-500";
             config.confirmLabel = "Libérer ma place";
             config.content = (
-                <DetailBox>
+                <>
                     <p className="text-gray-600 mb-2 italic text-xs">Merci de prévenir !</p>
-                    <Row label="Solde actuel :" value={solde} color="text-gray-500" />
-                    <Row label="Récupération :" value="+1" color="text-green-600" bold />
-                    <div className="border-t pt-2 mt-2"><Row label="Nouveau solde :" value={solde + 1} bold /></div>
-                </DetailBox>
+                    {renderCostInfo(1, "refund")}
+                </>
             );
+
         } else if (actionType === 'signal_absence_late') {
             config.title = "Annulation tardive (< 2h)";
             config.colorClass = "bg-red-500";
@@ -129,27 +132,24 @@ export default function StudentSessionDetail({ session, student, onClose, onUpda
             config.content = (
                 <DetailBox borderColor="border-red-200">
                     <p className="text-red-600 mb-2 font-bold text-xs">⚠️ Le cours commence bientôt.</p>
-                    <p className="text-gray-600 mb-2 text-xs">Pas de remboursement possible.</p>
+                    {!isExceptionnel && <p className="text-gray-600 mb-2 text-xs">Pas de remboursement possible.</p>}
                     <Row label="Solde actuel :" value={solde} color="text-gray-500" />
-                    <Row label="Récupération :" value="0" color="text-gray-400" bold />
+                    {!isExceptionnel && <Row label="Récupération :" value="0" color="text-gray-400" bold />}
                 </DetailBox>
             );
+
         } else if (actionType === 'cancel_absence') {
             config.title = "Reprendre votre place ?";
             config.colorClass = "bg-teal-600";
             config.confirmLabel = "Je reviens";
-            config.content = (
-                <DetailBox>
-                    <Row label="Solde actuel :" value={solde} color="text-gray-500" />
-                    <Row label="Coût :" value="-1" color="text-red-600" bold />
-                    <div className="border-t pt-2 mt-2"><Row label="Nouveau solde :" value={solde - 1} bold /></div>
-                </DetailBox>
-            );
+            config.content = renderCostInfo(1, "cost");
+
         } else if (actionType === 'waitlist_join') {
             config.title = "Rejoindre la file d'attente ?";
             config.colorClass = "bg-orange-400";
             config.confirmLabel = "M'inscrire";
             config.content = <p className="text-gray-600 text-sm">Vous serez notifié(e) par email.</p>;
+
         } else if (actionType === 'waitlist_leave') {
             config.title = "Quitter la file d'attente ?";
             config.colorClass = "bg-gray-500";
@@ -205,24 +205,32 @@ export default function StudentSessionDetail({ session, student, onClose, onUpda
             const userRef = doc(db, "eleves", myId);
 
             if (isAbsentNow) {
+                // JE REVIENS
                 batch.set(ref, { status: { [myId]: deleteField() } }, { merge: true });
-                batch.update(userRef, { absARemplacer: increment(-1) });
-                addHistoryEntry(batch, -1, `Retour : ${groupe.nom} (${dateStr})`);
+                // Crédit : Seulement si NON exceptionnel
+                const delta = isExceptionnel ? 0 : -1;
+                if (delta !== 0) batch.update(userRef, { absARemplacer: increment(delta) });
+                addHistoryEntry(batch, delta, `Retour : ${groupe.nom} (${dateStr})`);
+
             } else {
+                // JE M'ABSENTE
                 batch.set(ref, {
                     date: dateStr, groupeId: groupe.id, nomGroupe: groupe.nom, realDate: Timestamp.fromDate(dateObj),
                     status: { [myId]: 'absent_announced' }, updatedAt: serverTimestamp()
                 }, { merge: true });
 
                 if (!isLate) {
-                    batch.update(userRef, { absARemplacer: increment(1) });
-                    addHistoryEntry(batch, 1, `Absence : ${groupe.nom} (${dateStr})`);
+                    // À l'avance : Crédit +1 (sauf si exceptionnel)
+                    const delta = isExceptionnel ? 0 : 1;
+                    if (delta !== 0) batch.update(userRef, { absARemplacer: increment(delta) });
+                    addHistoryEntry(batch, delta, `Absence : ${groupe.nom} (${dateStr})`);
                 } else {
+                    // Tardif : Crédit 0
                     addHistoryEntry(batch, 0, `Absence Tardive : ${groupe.nom} (${dateStr})`);
                 }
             }
             await batch.commit();
-        }, isLate ? "Noté (Tardif)." : "Absence notée (+1)."));
+        }, isLate ? "Noté (Tardif)." : (isAbsentNow ? "Présence confirmée." : "Absence notée.")));
     };
 
     const bookSpot = () => {
@@ -237,6 +245,7 @@ export default function StudentSessionDetail({ session, student, onClose, onUpda
                 status: { [myId]: 'present' }, updatedAt: serverTimestamp()
             };
 
+            // Gestion du lien de remplacement (seulement si standard)
             if (!isExceptionnel) {
                 const titulaireAbsentDispo = inscrits.find(t => {
                     const status = attendanceData.status?.[t.id];
@@ -251,8 +260,12 @@ export default function StudentSessionDetail({ session, student, onClose, onUpda
             if (isInWaitingList) updateData.waitingList = arrayRemove(myId);
 
             batch.set(ref, updateData, { merge: true });
-            batch.update(userRef, { absARemplacer: increment(-1) });
-            addHistoryEntry(batch, -1, `Réservation : ${groupe.nom} (${dateStr})`);
+
+            // Crédit : -1 seulement si NON exceptionnel
+            const delta = isExceptionnel ? 0 : -1;
+            if (delta !== 0) batch.update(userRef, { absARemplacer: increment(delta) });
+
+            addHistoryEntry(batch, delta, `Réservation : ${groupe.nom} (${dateStr})`);
 
             await batch.commit();
         }, "Réservé !"));
@@ -269,11 +282,15 @@ export default function StudentSessionDetail({ session, student, onClose, onUpda
                 [`status.${myId}`]: deleteField(),
                 [`replacementLinks.${myId}`]: deleteField()
             });
-            batch.update(userRef, { absARemplacer: increment(1) });
-            addHistoryEntry(batch, 1, `Annulation Résa : ${groupe.nom} (${dateStr})`);
+
+            // Remboursement : +1 seulement si NON exceptionnel
+            const delta = isExceptionnel ? 0 : 1;
+            if (delta !== 0) batch.update(userRef, { absARemplacer: increment(delta) });
+
+            addHistoryEntry(batch, delta, `Annulation Résa : ${groupe.nom} (${dateStr})`);
 
             await batch.commit();
-        }, "Annulé (+1)."));
+        }, "Annulé."));
     };
 
     const toggleWaitlist = () => {
@@ -362,7 +379,7 @@ export default function StudentSessionDetail({ session, student, onClose, onUpda
                                 const eleve = slot.student;
                                 const isMe = eleve.id === myId;
                                 const status = attendanceData.status?.[eleve.id];
-                                const isPresent = status === 'present' || status === undefined; // CORRECTION LOGIQUE
+                                const isPresent = status === 'present' || status === undefined;
                                 const isAbsent = !isPresent;
                                 const replacementId = Object.keys(replacementLinks).find(k => replacementLinks[k] === eleve.id);
                                 const replacement = replacementId ? invites.find(i => i.id === replacementId) : null;
