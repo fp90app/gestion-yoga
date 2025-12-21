@@ -147,6 +147,9 @@ exports.onPlaceLiberated = functions.region("europe-west1").firestore
             if (emails.length === 0) return null;
 
             const placesRestantes = capacity - countAfter;
+            // Formatage de la date : YYYY-MM-DD -> JJ/MM/AAAA
+            const [annee, mois, jour] = dateSeance.split("-");
+            const dateFr = `${jour}/${mois}/${annee}`;
 
             const emailData = {
                 sender: { name: "Yoga Sandrine", email: "putod.sandrine@gmail.com" },
@@ -155,16 +158,19 @@ exports.onPlaceLiberated = functions.region("europe-west1").firestore
                 htmlContent: `
                     <div style="font-family: Arial, sans-serif; color: #333; max-width: 600px; margin: 0 auto;">
                         <h2 style="color: #0d9488;">Une place vous attend !</h2>
-                        <p>Bonjour,</p>
-                        <p>Une place vient de se libérer pour le cours :</p>
+                        
+                        <p style="font-weight: bold; color: #c2410c;">Bonjour,</p>
+                        <p style="font-weight: bold; color: #c2410c;">Une place vient de se libérer pour un cours où tu es noté(e) en attente :</p>
                         <div style="background-color: #f0fdfa; padding: 15px; border-left: 4px solid #0d9488; margin: 20px 0;">
                             <strong>${seanceNom}</strong><br>
-                            Date : ${dateSeance}<br>
+                            Date : ${dateFr}<br>
                             <small>Places disponibles : ${placesRestantes}</small>
                         </div>
-                        <p style="font-weight: bold; color: #c2410c;">Premier arrivé, premier servi !</p>
+                        
+                         <p style="font-weight: bold; color: #c2410c;">Si tu souhaites venir, pense à aller t'inscrire sur le planning !</p>
+                        <p style="font-weight: bold; color: #c2410c;">Premier arrivé, premier servi.</p>
                         <div style="text-align: center; margin-top: 30px;">
-                            <a href="https://ton-site-yoga.web.app" style="background-color: #0d9488; color: white; padding: 12px 25px; text-decoration: none; border-radius: 8px; font-weight: bold;">
+                            <a href="https://gestion-yoga.pages.dev" style="background-color: #0d9488; color: white; padding: 12px 25px; text-decoration: none; border-radius: 8px; font-weight: bold;">
                                 Réserver maintenant
                             </a>
                         </div>

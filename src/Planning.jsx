@@ -314,7 +314,7 @@ export default function Planning() {
             <div className="flex flex-col md:flex-row items-center justify-between mb-6 bg-white p-4 rounded-xl shadow-sm border border-gray-100 sticky top-0 z-20">
                 <div className="flex flex-col gap-1 w-full md:w-auto">
                     <h2 className="text-xl md:text-2xl font-playfair font-bold text-gray-800 whitespace-nowrap">
-                        {formaterDateSimple(lundiActuel)} - {formaterDateSimple(dimancheFinSemaine)}
+                        {formaterDateSimple(lundiActuel)} - {formaterDateSimple(dimancheFinSemaine)} {dimancheFinSemaine.getFullYear()}
                     </h2>
 
                     {/* SÉLECTEUR DE VUE (PROF ou ÉLÈVE) */}
@@ -336,9 +336,29 @@ export default function Planning() {
                 </div>
 
                 <div className="flex items-center bg-gray-100 rounded-lg p-1 mt-3 md:mt-0">
-                    <button onClick={() => changerSemaine(-1)} className="px-4 py-1 hover:bg-white rounded-md text-gray-600 font-bold">←</button>
-                    <button onClick={() => setLundiActuel(getLundi(new Date()))} className="px-4 py-1 text-teal-700 font-bold text-sm uppercase">Auj.</button>
-                    <button onClick={() => changerSemaine(1)} className="px-4 py-1 hover:bg-white rounded-md text-gray-600 font-bold">→</button>
+                    
+                    <div className="flex items-center bg-gray-100 rounded-lg p-1 mt-3 md:mt-0 gap-1">
+    <button onClick={() => changerSemaine(-1)} className="w-8 h-8 flex items-center justify-center hover:bg-white rounded-md text-gray-600 font-bold transition">←</button>
+    
+    {/* --- NOUVEAU SÉLECTEUR DE DATE --- */}
+    <div className="relative group">
+        <input 
+            type="date" 
+            className="w-8 h-8 opacity-0 absolute inset-0 cursor-pointer z-10"
+            onChange={(e) => {
+                if(e.target.value) setLundiActuel(getLundi(new Date(e.target.value)));
+            }}
+        />
+        <button className="w-8 h-8 flex items-center justify-center hover:bg-white rounded-md text-gray-600 font-bold transition">
+            📅
+        </button>
+    </div>
+    {/* ---------------------------------- */}
+
+    <button onClick={() => setLundiActuel(getLundi(new Date()))} className="px-3 py-1 hover:bg-white rounded-md text-teal-700 font-bold text-sm uppercase transition">Auj.</button>
+    <button onClick={() => changerSemaine(1)} className="w-8 h-8 flex items-center justify-center hover:bg-white rounded-md text-gray-600 font-bold transition">→</button>
+</div>
+ 
                 </div>
             </div>
 

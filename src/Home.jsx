@@ -85,7 +85,7 @@ export default function Home() {
                             className="inline-flex items-center gap-2 mt-2 text-amber-700 font-bold hover:text-amber-800 hover:underline uppercase tracking-wide text-sm"
                         >
                             Découvrir mes audios
-                            <span className="text-lg">➜</span>
+                          
                         </a>
                     </div>
                 </div>

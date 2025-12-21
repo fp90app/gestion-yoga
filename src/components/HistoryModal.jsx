@@ -59,7 +59,7 @@ export default function HistoryModal({ student, onClose }) {
                                         <div>
                                             <div className="font-bold text-gray-800 text-sm">{item.motif}</div>
                                             <div className="text-xs text-gray-400 mt-1">
-                                                {item.date?.toDate().toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                                               {item.date?.toDate().toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
                                             </div>
                                         </div>
                                         <div className={`font-bold text-lg ${isNeutral ? 'text-gray-400' : (isPositive ? 'text-green-600' : 'text-red-500')}`}>
