@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { db } from './firebase';
 import { collection, getDocs, query, where } from 'firebase/firestore';
 import GestionSeance from './GestionSeance';
@@ -38,6 +38,7 @@ export default function Planning() {
     const [donneesBrutes, setDonneesBrutes] = useState({ groupes: [], eleves: [], exceptions: [], attendances: [] });
     const [loading, setLoading] = useState(true);
     const [lundiActuel, setLundiActuel] = useState(getLundi(new Date()));
+    const datePickerRef = useRef(null);
 
     // --- MODES D'AFFICHAGE (Nouveau) ---
     const [selectedStudentId, setSelectedStudentId] = useState(""); // Si vide = Vue Professeur
@@ -337,27 +338,66 @@ export default function Planning() {
 
                 <div className="flex items-center bg-gray-100 rounded-lg p-1 mt-3 md:mt-0">
                     
-                    <div className="flex items-center bg-gray-100 rounded-lg p-1 mt-3 md:mt-0 gap-1">
-    <button onClick={() => changerSemaine(-1)} className="w-8 h-8 flex items-center justify-center hover:bg-white rounded-md text-gray-600 font-bold transition">←</button>
-    
-    {/* --- NOUVEAU SÉLECTEUR DE DATE --- */}
-    <div className="relative group">
-        <input 
-            type="date" 
-            className="w-8 h-8 opacity-0 absolute inset-0 cursor-pointer z-10"
-            onChange={(e) => {
-                if(e.target.value) setLundiActuel(getLundi(new Date(e.target.value)));
-            }}
-        />
-        <button className="w-8 h-8 flex items-center justify-center hover:bg-white rounded-md text-gray-600 font-bold transition">
-            📅
-        </button>
-    </div>
-    {/* ---------------------------------- */}
+                    {/* NAVIGATION SEMAINE AVEC SÉLECTEUR DE DATE CORRIGÉ */}
+<div className="flex items-center bg-gray-100 rounded-lg p-1 mt-3 md:mt-0 gap-1">
+   <button 
+        type="button" 
+        // REMPLACE "changerSemaine(-1)" PAR CECI :
+        onClick={() => setLundiActuel(prev => ajouterJours(prev, -7))} 
+        className="w-8 h-8 flex items-center justify-center hover:bg-white rounded-md text-gray-600 font-bold transition"
+    >
+        ←
+    </button>
 
-    <button onClick={() => setLundiActuel(getLundi(new Date()))} className="px-3 py-1 hover:bg-white rounded-md text-teal-700 font-bold text-sm uppercase transition">Auj.</button>
-    <button onClick={() => changerSemaine(1)} className="w-8 h-8 flex items-center justify-center hover:bg-white rounded-md text-gray-600 font-bold transition">→</button>
+
+{/* --- SÉLECTEUR DE DATE CORRIGÉ --- */}
+<div className="relative group">
+    <input 
+        type="date" 
+        id="date-picker-planning" // ID unique pour éviter les conflits
+        className="absolute opacity-0 w-0 h-0" // On retire top-0 left-0 qui causait le bug d'ancrage
+        onChange={(e) => {
+            if(e.target.value) setLundiActuel(getLundi(new Date(e.target.value)));
+        }}
+    />
+    
+    <button 
+        type="button" 
+        onClick={() => {
+            // Méthode robuste utilisée dans StudentPortal
+            try {
+                document.getElementById('date-picker-planning').showPicker();
+            } catch (e) {
+                // Fallback au cas où
+                console.warn(e);
+                document.getElementById('date-picker-planning').focus(); 
+            }
+        }}
+        className="w-8 h-8 flex items-center justify-center hover:bg-white rounded-md text-gray-600 font-bold transition cursor-pointer"
+        title="Choisir une date"
+    >
+        📅
+    </button>
 </div>
+
+    <button 
+        type="button" 
+        onClick={() => setLundiActuel(getLundi(new Date()))} 
+        className="px-3 py-1 hover:bg-white rounded-md text-teal-700 font-bold text-sm uppercase transition"
+    >
+        Auj.
+    </button>
+<button 
+        type="button" 
+        // REMPLACE "changerSemaine(1)" PAR CECI :
+        onClick={() => setLundiActuel(prev => ajouterJours(prev, 7))} 
+        className="w-8 h-8 flex items-center justify-center hover:bg-white rounded-md text-gray-600 font-bold transition"
+    >
+        →
+    </button>
+</div>
+    
+ 
  
                 </div>
             </div>

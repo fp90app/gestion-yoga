@@ -258,7 +258,23 @@ export default function StudentPortal() {
 
     const dimancheFin = ajouterJours(lundiActuel, 6);
     const isDebt = (student.absARemplacer || 0) < 0;
+    // Helper pour le texte du solde
     const soldeClass = isDebt ? "bg-red-100 text-red-800 border-red-200" : "bg-teal-100 text-teal-800 border-teal-200";
+    const getSoldeLabel = (val) => {
+        const solde = val || 0;
+        if (solde > 0) return `Séance(s) à rattraper : ${solde}`;
+        if (solde < 0) return `Séance(s) à payer : ${Math.abs(solde)}`;
+        return "Aucune séance à rattraper";
+    };
+
+    // --- NOUVEAU : LOGIQUE STATUT ABONNEMENT ---
+    const hasSubscriptions = student.enrolledGroupIds && student.enrolledGroupIds.length > 0;
+    let subscriptionStatus = 'none'; // none, ok, late
+    if (hasSubscriptions) {
+        // Vérifier si TOUS les groupes inscrits sont payés
+        const allPaid = student.enrolledGroupIds.every(gid => student.payments?.[gid] === true);
+        subscriptionStatus = allPaid ? 'ok' : 'late';
+    }
 
     return (
         <div className="min-h-screen bg-gray-50 flex flex-col font-sans">
@@ -272,69 +288,64 @@ export default function StudentPortal() {
                         className={`hidden md:inline-flex items-center gap-2 text-xs font-bold px-3 py-1 rounded-full border transition hover:shadow-md cursor-pointer ${soldeClass}`}
                         title="Voir l'historique"
                     >
-                        <span>Solde : {student.absARemplacer} séance(s)</span>
+                        <span>{getSoldeLabel(student.absARemplacer)}</span>
                         <span className="text-xs opacity-50">ℹ️</span>
                     </button>
+
+                    {/* --- BOUTON ABONNEMENT (Desktop) --- */}
+                    {hasSubscriptions && (
+                        <div className={`hidden md:flex items-center gap-2 px-3 py-1 rounded-full border text-xs font-bold ${subscriptionStatus === 'ok' ? 'bg-green-100 text-green-800 border-green-200' : 'bg-red-100 text-red-800 border-red-200'}`}>
+                            <span>{subscriptionStatus === 'ok' ? '✅ Abonnement à jour' : '⚠️ Abonnement à régulariser'}</span>
+                        </div>
+                    )}
                 </div>
 
               {/* NAVIGATION SEMAINE AVEC SÉLECTEUR DE DATE */}
-<div className="flex items-center bg-gray-100 rounded-lg p-1 gap-1">
-    
-    {/* Bouton Précédent */}
-    <button 
+<div className="flex items-center bg-gray-100 rounded-lg p-1 mt-3 md:mt-0 gap-1">
+   <button 
+        type="button" 
         onClick={() => setLundiActuel(prev => ajouterJours(prev, -7))} 
-        className="w-8 h-8 flex items-center justify-center rounded hover:bg-white text-gray-600 font-bold transition"
+        className="w-8 h-8 flex items-center justify-center hover:bg-white rounded-md text-gray-600 font-bold transition"
     >
         ←
     </button>
     
-    {/* --- SÉLECTEUR MOBILE (Icône seule) --- */}
-    <div className="relative md:hidden">
+    {/* --- SÉLECTEUR DE DATE ROBUSTE --- */}
+    <div className="relative group">
         <input 
             type="date" 
-            className="w-8 h-8 opacity-0 absolute inset-0 cursor-pointer z-10"
-            onChange={(e) => {
-                if(e.target.value) setLundiActuel(getLundi(new Date(e.target.value)));
-            }}
-        />
-        <button className="w-8 h-8 flex items-center justify-center hover:bg-white rounded text-gray-600 font-bold transition">
-            📅
-        </button>
-    </div>
-    
-{/* --- SÉLECTEUR DESKTOP (Texte complet + Icone) --- */}
-    <div className="relative hidden md:block">
-        {/* 1. L'input est caché mais possède un ID unique */}
-        <input 
-            type="date" 
-            id="date-picker-desktop"
+            id="date-picker-prof" 
             className="absolute opacity-0 w-0 h-0" 
             onChange={(e) => {
                 if(e.target.value) setLundiActuel(getLundi(new Date(e.target.value)));
             }}
         />
-        
-        {/* 2. Le bouton déclenche l'ouverture du calendrier via l'ID */}
         <button 
+            type="button" 
             onClick={() => {
                 try {
-                    document.getElementById('date-picker-desktop').showPicker();
-                } catch (error) {
-                    // Fallback pour vieux navigateurs: on focus juste
-                    document.getElementById('date-picker-desktop').focus();
+                    document.getElementById('date-picker-prof').showPicker();
+                } catch (e) {
+                    document.getElementById('date-picker-prof').focus();
                 }
             }}
-            className="text-xs font-bold text-gray-700 px-2 uppercase cursor-pointer hover:text-teal-600 transition flex items-center gap-2 h-8 hover:bg-white rounded"
+            className="w-8 h-8 flex items-center justify-center hover:bg-white rounded-md text-gray-600 font-bold transition cursor-pointer"
         >
-            <span className="text-lg pb-1">📅</span>
-            {lundiActuel.getDate()} {lundiActuel.toLocaleDateString('fr-FR', { month: 'short' })} - {dimancheFin.getDate()} {dimancheFin.toLocaleDateString('fr-FR', { month: 'short' })} {dimancheFin.getFullYear()}
+            📅
         </button>
     </div>
 
-    {/* Bouton Suivant */}
     <button 
+        type="button" 
+        onClick={() => setLundiActuel(getLundi(new Date()))} 
+        className="px-3 py-1 hover:bg-white rounded-md text-teal-700 font-bold text-sm uppercase transition"
+    >
+        Auj.
+    </button>
+<button 
+        type="button" 
         onClick={() => setLundiActuel(prev => ajouterJours(prev, 7))} 
-        className="w-8 h-8 flex items-center justify-center rounded hover:bg-white text-gray-600 font-bold transition"
+        className="w-8 h-8 flex items-center justify-center hover:bg-white rounded-md text-gray-600 font-bold transition"
     >
         →
     </button>
@@ -345,15 +356,23 @@ export default function StudentPortal() {
                         onClick={() => setOnlyMyCourses(!onlyMyCourses)}
                         className={`text-xs font-bold px-3 py-1.5 rounded-lg border transition flex items-center gap-1 ${onlyMyCourses ? 'bg-teal-600 text-white border-teal-600' : 'bg-white text-gray-500 border-gray-200 hover:bg-gray-50'}`}
                     >
-                        <span>{onlyMyCourses ? '👁️ Mes cours' : '📅 Tout voir'}</span>
+                        <span>{onlyMyCourses ? '👁️ Mes cours' : '👁️ Tout voir'}</span>
                     </button>
 
-                    <button
-                        onClick={() => setShowHistory(true)}
-                        className={`md:hidden text-xs font-bold px-2 py-1 rounded-full border ${soldeClass}`}
-                    >
-                        {student.absARemplacer} Séance(s)
-                    </button>
+                    {/* Mobile Badges Groupés */}
+                    <div className="flex flex-col gap-1 md:hidden items-end">
+                        <button
+                            onClick={() => setShowHistory(true)}
+                            className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${soldeClass}`}
+                        >
+                        {student.absARemplacer !== 0 ? (student.absARemplacer > 0 ? `+${student.absARemplacer}` : student.absARemplacer) : '0'}
+                        </button>
+                        {hasSubscriptions && (
+                             <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${subscriptionStatus === 'ok' ? 'bg-green-100 text-green-800 border-green-200' : 'bg-red-100 text-red-800 border-red-200'}`}>
+                                {subscriptionStatus === 'ok' ? 'Abo ✅' : 'Abo ⚠️'}
+                             </span>
+                        )}
+                    </div>
 
                     <Link to="/" className="text-gray-400 hover:text-teal-600 text-xs font-bold mr-2 hidden md:block">Accueil</Link>
                     <button onClick={() => setStudent(null)} className="text-sm font-bold text-red-500 hover:bg-red-50 px-2 py-1 rounded transition">
