@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { db } from './firebase';
 import { Link } from 'react-router-dom';
 import { collection, query, where, getDocs, doc, getDoc } from 'firebase/firestore';
@@ -7,6 +7,7 @@ import Skeleton from './components/Skeleton';
 import HistoryModal from './components/HistoryModal';
 
 const JOURS = ["Dimanche", "Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi"];
+const MOIS = ["Jan", "Fév", "Mar", "Avr", "Mai", "Juin", "Juil", "Août", "Sep", "Oct", "Nov", "Déc"];
 
 // --- CONFIGURATION GRILLE ---
 const HEURE_DEBUT = 8;
@@ -36,6 +37,10 @@ const getPlacesLabel = (count) => {
     return `${count} places`;
 };
 
+const formaterDateSimple = (date) => {
+    return `${date.getDate()} ${MOIS[date.getMonth()]}`;
+};
+
 export default function StudentPortal() {
     const [email, setEmail] = useState('');
     const [student, setStudent] = useState(null);
@@ -44,15 +49,27 @@ export default function StudentPortal() {
     // Loading spécifique pour le planning (évite de recharger toute la page)
     const [loadingPlanning, setLoadingPlanning] = useState(false);
 
+    // Date actuelle affichée (par défaut le lundi de la semaine courante)
     const [lundiActuel, setLundiActuel] = useState(getLundi(new Date()));
+
+    // Ref pour savoir si on a déjà tenté la bascule auto vers la semaine suivante
+    const autoSwitchDone = useRef(false);
+
     const [sessionsSemaine, setSessionsSemaine] = useState([]);
     const [donneesGlobales, setDonneesGlobales] = useState(null);
 
     const [selectedSession, setSelectedSession] = useState(null);
     const [showHistory, setShowHistory] = useState(false);
 
-    // --- NOUVEAU FILTRE : Voir uniquement mes cours ---
+    // --- FILTRE : Voir uniquement mes cours ---
     const [onlyMyCourses, setOnlyMyCourses] = useState(false);
+
+    // Réinitialiser le switch auto si on se déconnecte
+    useEffect(() => {
+        if (!student) {
+            autoSwitchDone.current = false;
+        }
+    }, [student]);
 
     // --- LOGIN ---
     const handleLogin = async (e) => {
@@ -139,14 +156,16 @@ export default function StudentPortal() {
                 type: 'ajout'
             }));
 
+            // --- AMÉLIORATION : Tri Chronologique ---
+            // On combine et on trie tout de suite par heureDebut pour corriger l'ordre sur mobile
             const tousLesCreneaux = [...groupesDuJour, ...ajoutsDuJour];
+            tousLesCreneaux.sort((a, b) => a.heureDebut.localeCompare(b.heureDebut));
 
             tousLesCreneaux.forEach(groupe => {
                 let estAnnule = false;
                 let motifAnnulation = "";
 
                 if (!groupe.isExceptionnel) {
-                    // MODIF ICI : On récupère l'objet exception complet pour avoir le motif
                     const exceptionAnnulation = exceptions.find(ex => ex.groupeId === groupe.id && ex.date === dateStr && ex.type === "annulation");
                     if (exceptionAnnulation) {
                         estAnnule = true;
@@ -188,7 +207,7 @@ export default function StudentPortal() {
 
                 const waitingListPosition = isInWaitingList ? waitingListIds.indexOf(student.id) + 1 : null;
 
-                // --- NOUVEAU : CALCUL SI PASSÉ ---
+                // --- CALCUL SI PASSÉ ---
                 const [h, m] = groupe.heureDebut.split(':').map(Number);
                 const sessionEnd = new Date(dateDuJour);
                 sessionEnd.setHours(h, m + (groupe.duree || 60), 0, 0); // On considère passé à la fin du cours
@@ -212,10 +231,32 @@ export default function StudentPortal() {
                     donneesGlobales,
                     isExceptionnel: !!groupe.isExceptionnel,
                     estAnnule,
-                    motifAnnulation, // On transmet le motif
+                    motifAnnulation,
                     isPast
                 });
             });
+        }
+
+        // --- AMÉLIORATION : Bascule intelligente ---
+        const startOfCurrentWeek = getLundi(new Date());
+        const isViewingCurrentWeek = startOfCurrentWeek.getTime() === lundiActuel.getTime();
+
+        if (isViewingCurrentWeek && !autoSwitchDone.current) {
+            // Est-ce qu'il reste des cours actifs (ni passés, ni annulés) cette semaine ?
+            const hasFutureCourses = planning.some(s => !s.isPast && !s.estAnnule);
+
+            if (!hasFutureCourses) {
+                // Semaine terminée ou vide -> on passe à la suivante
+                setLundiActuel(prev => ajouterJours(prev, 7));
+                autoSwitchDone.current = true;
+                setLoadingPlanning(false);
+                return; // On stoppe l'affichage de cette semaine pour charger la suivante
+            }
+        }
+        
+        // Si on est sur la semaine courante et qu'on n'a pas basculé, on marque comme fait pour ne pas gêner le bouton "précédent"
+        if (isViewingCurrentWeek) {
+            autoSwitchDone.current = true;
         }
 
         setSessionsSemaine(planning);
@@ -258,7 +299,6 @@ export default function StudentPortal() {
 
     const dimancheFin = ajouterJours(lundiActuel, 6);
     const isDebt = (student.absARemplacer || 0) < 0;
-    // Helper pour le texte du solde
     const soldeClass = isDebt ? "bg-red-100 text-red-800 border-red-200" : "bg-teal-100 text-teal-800 border-teal-200";
     const getSoldeLabel = (val) => {
         const solde = val || 0;
@@ -267,11 +307,9 @@ export default function StudentPortal() {
         return "Aucune séance à rattraper";
     };
 
-    // --- NOUVEAU : LOGIQUE STATUT ABONNEMENT ---
     const hasSubscriptions = student.enrolledGroupIds && student.enrolledGroupIds.length > 0;
-    let subscriptionStatus = 'none'; // none, ok, late
+    let subscriptionStatus = 'none';
     if (hasSubscriptions) {
-        // Vérifier si TOUS les groupes inscrits sont payés
         const allPaid = student.enrolledGroupIds.every(gid => student.payments?.[gid] === true);
         subscriptionStatus = allPaid ? 'ok' : 'late';
     }
@@ -292,7 +330,6 @@ export default function StudentPortal() {
                         <span className="text-xs opacity-50">ℹ️</span>
                     </button>
 
-                    {/* --- BOUTON ABONNEMENT (Desktop) --- */}
                     {hasSubscriptions && (
                         <div className={`hidden md:flex items-center gap-2 px-3 py-1 rounded-full border text-xs font-bold ${subscriptionStatus === 'ok' ? 'bg-green-100 text-green-800 border-green-200' : 'bg-red-100 text-red-800 border-red-200'}`}>
                             <span>{subscriptionStatus === 'ok' ? '✅ Abonnement à jour' : '⚠️ Abonnement à régulariser'}</span>
@@ -300,58 +337,64 @@ export default function StudentPortal() {
                     )}
                 </div>
 
-              {/* NAVIGATION SEMAINE AVEC SÉLECTEUR DE DATE */}
-<div className="flex items-center bg-gray-100 rounded-lg p-1 mt-3 md:mt-0 gap-1">
-   <button 
-        type="button" 
-        onClick={() => setLundiActuel(prev => ajouterJours(prev, -7))} 
-        className="w-8 h-8 flex items-center justify-center hover:bg-white rounded-md text-gray-600 font-bold transition"
-    >
-        ←
-    </button>
-    
-    {/* --- SÉLECTEUR DE DATE ROBUSTE --- */}
-    <div className="relative group">
-        <input 
-            type="date" 
-            id="date-picker-prof" 
-            className="absolute opacity-0 w-0 h-0" 
-            onChange={(e) => {
-                if(e.target.value) setLundiActuel(getLundi(new Date(e.target.value)));
-            }}
-        />
-        <button 
-            type="button" 
-            onClick={() => {
-                try {
-                    document.getElementById('date-picker-prof').showPicker();
-                } catch (e) {
-                    document.getElementById('date-picker-prof').focus();
-                }
-            }}
-            className="w-8 h-8 flex items-center justify-center hover:bg-white rounded-md text-gray-600 font-bold transition cursor-pointer"
-        >
-            📅
-        </button>
-    </div>
+                {/* --- NAVIGATION SEMAINE AVEC SÉLECTEUR DE DATE --- */}
+                <div className="flex flex-col items-center justify-center">
+                    {/* AMÉLIORATION : Affichage des dates */}
+                    <span className="text-[10px] uppercase font-bold text-gray-400 mb-0.5 tracking-wide">
+                        {formaterDateSimple(lundiActuel)} - {formaterDateSimple(dimancheFin)}
+                    </span>
+                    
+                    <div className="flex items-center bg-gray-100 rounded-lg p-1 gap-1">
+                        <button 
+                            type="button" 
+                            onClick={() => setLundiActuel(prev => ajouterJours(prev, -7))} 
+                            className="w-8 h-8 flex items-center justify-center hover:bg-white rounded-md text-gray-600 font-bold transition"
+                        >
+                            ←
+                        </button>
+                        
+                        <div className="relative group">
+                            <input 
+                                type="date" 
+                                id="date-picker-prof" 
+                                className="absolute opacity-0 w-0 h-0" 
+                                onChange={(e) => {
+                                    if(e.target.value) setLundiActuel(getLundi(new Date(e.target.value)));
+                                }}
+                            />
+                            <button 
+                                type="button" 
+                                onClick={() => {
+                                    try {
+                                        document.getElementById('date-picker-prof').showPicker();
+                                    } catch (e) {
+                                        document.getElementById('date-picker-prof').focus();
+                                    }
+                                }}
+                                className="w-8 h-8 flex items-center justify-center hover:bg-white rounded-md text-gray-600 font-bold transition cursor-pointer"
+                            >
+                                📅
+                            </button>
+                        </div>
 
-    <button 
-        type="button" 
-        onClick={() => setLundiActuel(getLundi(new Date()))} 
-        className="px-3 py-1 hover:bg-white rounded-md text-teal-700 font-bold text-sm uppercase transition"
-    >
-        Auj.
-    </button>
-<button 
-        type="button" 
-        onClick={() => setLundiActuel(prev => ajouterJours(prev, 7))} 
-        className="w-8 h-8 flex items-center justify-center hover:bg-white rounded-md text-gray-600 font-bold transition"
-    >
-        →
-    </button>
-</div>
+                        <button 
+                            type="button" 
+                            onClick={() => setLundiActuel(getLundi(new Date()))} 
+                            className="px-3 py-1 hover:bg-white rounded-md text-teal-700 font-bold text-sm uppercase transition"
+                        >
+                            Auj.
+                        </button>
+                        <button 
+                            type="button" 
+                            onClick={() => setLundiActuel(prev => ajouterJours(prev, 7))} 
+                            className="w-8 h-8 flex items-center justify-center hover:bg-white rounded-md text-gray-600 font-bold transition"
+                        >
+                            →
+                        </button>
+                    </div>
+                </div>
+
                 <div className="flex items-center gap-3">
-                    {/* BOUTON FILTRE MES COURS */}
                     <button
                         onClick={() => setOnlyMyCourses(!onlyMyCourses)}
                         className={`text-xs font-bold px-3 py-1.5 rounded-lg border transition flex items-center gap-1 ${onlyMyCourses ? 'bg-teal-600 text-white border-teal-600' : 'bg-white text-gray-500 border-gray-200 hover:bg-gray-50'}`}
@@ -359,7 +402,6 @@ export default function StudentPortal() {
                         <span>{onlyMyCourses ? '👁️ Mes cours' : '👁️ Tout voir'}</span>
                     </button>
 
-                    {/* Mobile Badges Groupés */}
                     <div className="flex flex-col gap-1 md:hidden items-end">
                         <button
                             onClick={() => setShowHistory(true)}
@@ -386,7 +428,6 @@ export default function StudentPortal() {
                 {/* VUE MOBILE */}
                 <div className="block md:hidden space-y-4 pb-20">
                     {loadingPlanning ? (
-                        // SKELETON MOBILE
                         <div className="space-y-6 p-4">
                             {[1, 2, 3].map(i => (
                                 <div key={i} className="pl-3 border-l-2 border-gray-200 space-y-2">
@@ -399,7 +440,6 @@ export default function StudentPortal() {
                     ) : (
                         [0, 1, 2, 3, 4, 5, 6].map(offset => {
                             const dateJour = ajouterJours(lundiActuel, offset);
-                            // UTILISATION DU FILTRE ICI
                             const sessions = sessionsAffichees.filter(s => s.dateObj.toDateString() === dateJour.toDateString());
                             if (sessions.length === 0) return null;
 
@@ -407,8 +447,8 @@ export default function StudentPortal() {
                                 <div key={offset} className="pl-3 border-l-2 border-gray-200 relative">
                                     <div className="absolute -left-[5px] top-0 w-2 h-2 rounded-full bg-teal-500"></div>
                                     <h3 className="font-bold text-gray-500 mb-2 uppercase text-xs">
-    {dateJour.toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}
-</h3>
+                                        {dateJour.toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}
+                                    </h3>
                                     <div className="space-y-2">
                                         {sessions.map(sess => {
                                             if (sess.estAnnule) {
@@ -428,22 +468,20 @@ export default function StudentPortal() {
                                                 );
                                             }
 
-                                            // --- COULEURS ET STYLES MOBILE ---
                                             const isFull = sess.placesRestantes <= 0;
                                             let bg = "bg-white border-gray-200";
                                             let containerStyle = "active:scale-95 transition-transform flex justify-between items-center cursor-pointer";
 
                                             if (sess.isPast) {
-                                                // GRISÉ SI PASSÉ
                                                 bg = "bg-gray-50 border-gray-200 opacity-60 grayscale-[80%]";
-                                                containerStyle = "flex justify-between items-center cursor-pointer"; // Pas d'effet de clic
+                                                containerStyle = "flex justify-between items-center cursor-pointer";
                                             } else {
                                                 if (sess.type === 'ajout') {
-                                                    bg = "bg-purple-50/50 border-purple-200"; // VIOLET
+                                                    bg = "bg-purple-50/50 border-purple-200";
                                                 } else if (isFull) {
-                                                    bg = "bg-red-50/50 border-red-200"; // ROUGE SI COMPLET
+                                                    bg = "bg-red-50/50 border-red-200";
                                                 } else {
-                                                    bg = "bg-teal-50/30 border-teal-200"; // VERT SINON
+                                                    bg = "bg-teal-50/30 border-teal-200";
                                                 }
                                             }
 
@@ -505,7 +543,6 @@ export default function StudentPortal() {
 
                         {[1, 2, 3, 4, 5, 6, 0].map((jourIndex) => {
                             const dateJour = ajouterJours(lundiActuel, jourIndex === 0 ? 6 : jourIndex - 1);
-                            // UTILISATION DU FILTRE ICI
                             const sessions = sessionsAffichees.filter(s => s.dateObj.getDay() === jourIndex);
 
                             return (
@@ -521,7 +558,6 @@ export default function StudentPortal() {
                                     {sessions.map(sess => {
                                         const stylePos = getCardStyle(sess.groupe.heureDebut, sess.groupe.duree);
 
-                                        // --- GESTION ANNULÉ ---
                                         if (sess.estAnnule) {
                                             return (
                                                 <div
@@ -533,7 +569,6 @@ export default function StudentPortal() {
                                                     <div className="bg-white border border-red-200 text-red-500 font-black text-xs px-2 py-1 rounded shadow-sm transform -rotate-6 mb-1">
                                                         ANNULÉ
                                                     </div>
-                                                    {/* Affichage Motif Desktop */}
                                                     {sess.motifAnnulation && (
                                                         <div className="text-[10px] text-gray-500 text-center leading-tight italic px-1">
                                                             {sess.motifAnnulation}
@@ -543,32 +578,26 @@ export default function StudentPortal() {
                                             );
                                         }
 
-                                        // --- COULEURS ET STYLES DESKTOP ---
                                         const isFull = sess.placesRestantes <= 0;
                                         let containerClass = "hover:shadow-md cursor-pointer border-l-4 transition-all opacity-95 hover:opacity-100 flex flex-col justify-between";
                                         let titleColor = "text-gray-700";
 
                                         if (sess.isPast) {
-                                            // PASSÉ
                                             containerClass += " bg-gray-100 border-gray-300 opacity-70 grayscale";
                                             titleColor = "text-gray-500";
                                         } else {
                                             if (sess.type === 'ajout') {
-                                                // VIOLET
                                                 containerClass += " bg-purple-50 border-purple-500 hover:bg-purple-100";
                                                 titleColor = "text-purple-900";
                                             } else if (isFull) {
-                                                // ROUGE (Complet)
                                                 containerClass += " bg-red-50 border-red-500 hover:bg-red-100";
                                                 titleColor = "text-red-900";
                                             } else {
-                                                // VERT (Standard)
                                                 containerClass += " bg-teal-50 border-teal-500 hover:bg-teal-100";
                                                 titleColor = "text-teal-900";
                                             }
                                         }
 
-                                        // 2. Badges & Overlays (Statut Elève)
                                         let topBadge = null;
                                         let centerOverlay = null;
 
