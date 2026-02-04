@@ -40,6 +40,9 @@ export default function GestionSeance({ groupe, date, onClose, onEdit }) {
     const [estAnnule, setEstAnnule] = useState(false);
     const [annulationDocId, setAnnulationDocId] = useState(null);
 
+    // ÉTAPE C : États pour la note de séance
+    const [note, setNote] = useState("");
+
     // État pour la modale de confirmation
     const [confirmConfig, setConfirmConfig] = useState(null);
     const motifRef = useRef(""); // Référence pour le motif d'annulation
@@ -93,6 +96,7 @@ export default function GestionSeance({ groupe, date, onClose, onEdit }) {
             let savedReplacementLinks = {};
             let savedGuestOrigins = {};
             let savedWaitingIds = [];
+            let savedNote = "";
 
             if (attendanceDoc.exists()) {
                 const data = attendanceDoc.data();
@@ -100,6 +104,7 @@ export default function GestionSeance({ groupe, date, onClose, onEdit }) {
                 savedReplacementLinks = data.replacementLinks || {};
                 savedGuestOrigins = data.guestOrigins || {};
                 savedWaitingIds = data.waitingList || [];
+                savedNote = data.note || "";
             }
 
             // A. Identification des TITULAIRES
@@ -124,6 +129,7 @@ export default function GestionSeance({ groupe, date, onClose, onEdit }) {
             setWaitingList(listeAttente);
             setReplacementLinks(savedReplacementLinks);
             setGuestOrigins(savedGuestOrigins);
+            setNote(savedNote);
 
             const finalStatus = { ...savedStatus };
             setStatuses(finalStatus);
@@ -142,7 +148,7 @@ export default function GestionSeance({ groupe, date, onClose, onEdit }) {
     const triggerConfirm = (title, content, action, colorClass = "bg-red-500", confirmLabel = "Confirmer") => {
         setConfirmConfig({
             title,
-            content, // Content peut maintenant être du JSX
+            content,
             colorClass,
             confirmLabel,
             onConfirm: async () => {
@@ -153,8 +159,7 @@ export default function GestionSeance({ groupe, date, onClose, onEdit }) {
     };
 
     const handleAnnulerUnique = async () => {
-        motifRef.current = ""; // Reset du motif
-        // On passe du JSX dans le content pour inclure l'input
+        motifRef.current = "";
         const contentJsx = (
             <div className="space-y-3">
                 <p className="text-gray-600 text-sm">Les élèves ne verront plus ce cours.</p>
@@ -176,7 +181,7 @@ export default function GestionSeance({ groupe, date, onClose, onEdit }) {
                 date: dateStr,
                 groupeId: groupe.id,
                 type: "annulation",
-                motif: motifRef.current // Enregistrement du motif
+                motif: motifRef.current
             });
             await chargerDonnees();
             toast.success("Séance annulée");
@@ -184,7 +189,6 @@ export default function GestionSeance({ groupe, date, onClose, onEdit }) {
     };
 
     const handleRetablir = async () => {
-        // Pour rétablir, on passe juste du texte simple
         triggerConfirm("Rétablir la séance ?", <p className="text-gray-600 text-sm">Le cours réapparaîtra dans le planning.</p>, async () => {
             setLoading(true);
             await deleteDoc(doc(db, "exceptions", annulationDocId));
@@ -381,6 +385,7 @@ export default function GestionSeance({ groupe, date, onClose, onEdit }) {
                 waitingList: waitingList.map(e => e.id),
                 replacementLinks: replacementLinks,
                 guestOrigins: guestOrigins,
+                note: note, // ÉTAPE C : Sauvegarde de la note
                 updatedAt: serverTimestamp()
             }, { merge: true });
 
@@ -409,18 +414,16 @@ export default function GestionSeance({ groupe, date, onClose, onEdit }) {
 
                 if (change !== 0) {
                     if (isExceptionnel) {
-                        // MODIFICATION : Pas d'impact sur le solde si séance exceptionnelle
                         const histRef = doc(collection(db, "eleves", eid, "history"));
                         batch.set(histRef, {
                             date: serverTimestamp(),
-                            delta: 0, // Delta 0 pour info seulement
+                            delta: 0,
                             motif: `Modif Prof (Exceptionnel) : ${groupe.nom}`,
                             seanceId: seanceId,
                             groupeNom: groupe.nom,
                             seanceDate: dateStr
                         });
                     } else {
-                        // Comportement STANDARD
                         batch.update(doc(db, "eleves", eid), { absARemplacer: increment(change) });
                         const histRef = doc(collection(db, "eleves", eid, "history"));
                         batch.set(histRef, {
@@ -548,6 +551,20 @@ export default function GestionSeance({ groupe, date, onClose, onEdit }) {
 
                 {/* CONTENU */}
                 <div className="flex-1 overflow-y-auto p-6 bg-gray-100 relative">
+                    {/* ÉTAPE C : BLOC NOTE DE SÉANCE */}
+                    <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 shadow-sm mb-6">
+                        <label className="flex items-center gap-2 text-amber-900 font-bold text-xs uppercase tracking-wider mb-2">
+                            <span>📢</span> Note de séance (visible par les élèves)
+                        </label>
+                        <input
+                            type="text"
+                            value={note}
+                            onChange={(e) => setNote(e.target.value)}
+                            placeholder="Ex: Exceptionnel ce soir séance à 17h au lieu de 17h15..."
+                            className="w-full border border-amber-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-amber-500 outline-none bg-white"
+                        />
+                    </div>
+
                     {estAnnule && (
                         <div className="absolute inset-0 bg-white/60 z-10 flex items-center justify-center backdrop-blur-sm">
                             <div className="bg-white p-6 rounded-xl shadow-2xl text-center border-2 border-red-100">
@@ -583,7 +600,6 @@ export default function GestionSeance({ groupe, date, onClose, onEdit }) {
                                                 <div className="font-bold text-gray-800 text-lg">{eleve.prenom} {eleve.nom}</div>
                                                 <div className="text-[10px] uppercase font-bold text-gray-400 mb-2 tracking-wide">Titulaire</div>
                                             </div>
-                                            {/* BOUTONS ADMIN */}
                                             <div className="flex items-center gap-2">
                                                 <button onClick={() => toggleStatus(eleve.id)} className={`text-xs px-3 py-1 rounded font-bold border transition ${isPresent ? 'bg-teal-50 text-teal-700 border-teal-200' : 'bg-white text-red-500 border-red-200 shadow-sm'}`}>
                                                     {isPresent ? 'Présent' : 'Absent'}
@@ -678,3 +694,4 @@ export default function GestionSeance({ groupe, date, onClose, onEdit }) {
         </div>
     );
 }
+

@@ -14,6 +14,10 @@ export default function Annuaire() {
     const [searchTerm, setSearchTerm] = useState("");
     const [selectedGroupId, setSelectedGroupId] = useState(""); 
     const [paymentFilter, setPaymentFilter] = useState("all"); // 'all', 'ok', 'todo'
+    
+    // NOUVEAU : Filtre par période pour le paiement (Étape B)
+    const [paymentPeriod, setPaymentPeriod] = useState("started"); // 'all', 'started', 'future'
+
     const [showArchived, setShowArchived] = useState(false);
 
     // Inscription Rapide
@@ -106,7 +110,6 @@ export default function Annuaire() {
     // --- LOGIQUE PAIEMENT ---
     
     const togglePaymentStatus = async (eleveId, groupeId, currentStatus) => {
-        // Optimiste UI update
         const newStatus = !currentStatus;
         
         setEleves(prev => prev.map(e => {
@@ -125,7 +128,7 @@ export default function Annuaire() {
         } catch (error) {
             console.error(error);
             toast.error("Erreur sauvegarde paiement");
-            fetchData(); // Revert en cas d'erreur
+            fetchData(); 
         }
     };
 
@@ -144,7 +147,7 @@ export default function Annuaire() {
                 role: "student",
                 absARemplacer: 0,
                 enrolledGroupIds: [],
-                payments: {} // Init payments map
+                payments: {} 
             });
             setFormData({ nom: '', prenom: '', email: '' });
             fetchData();
@@ -207,7 +210,6 @@ export default function Annuaire() {
                 enrolledGroupIds: arrayUnion(selectedGroupId)
             });
             
-            // Mise à jour locale
             setEleves(prev => prev.map(e => {
                 if (e.id === studentId) {
                     const currentGroups = e.enrolledGroupIds || [];
@@ -287,26 +289,38 @@ export default function Annuaire() {
         
         let matchesPayment = true;
         if (paymentFilter !== 'all') {
-            const userGroups = e.enrolledGroupIds || [];
-            // Si pas de groupe, on considère "à jour" (pas de dette) mais on peut l'exclure si on veut
+            const userGroups = (e.enrolledGroupIds || [])
+                .map(gid => groupes.find(g => g.id === gid))
+                .filter(Boolean);
+
             if (userGroups.length === 0) {
-                matchesPayment = (paymentFilter === 'ok'); // Visible seulement si on cherche "ok"
+                matchesPayment = (paymentFilter === 'ok'); 
             } else {
-                const allPaid = userGroups.every(gid => e.payments?.[gid] === true);
-                if (paymentFilter === 'ok') matchesPayment = allPaid;
-                if (paymentFilter === 'todo') matchesPayment = !allPaid;
+                const now = new Date();
+                
+                // Filtrer les groupes selon la période sélectionnée
+                const relevantGroups = userGroups.filter(g => {
+                    if (paymentPeriod === 'all') return true;
+                    const hasStarted = now >= g._debut;
+                    return paymentPeriod === 'started' ? hasStarted : !hasStarted;
+                });
+
+                if (relevantGroups.length === 0) {
+                    matchesPayment = (paymentFilter === 'ok'); 
+                } else {
+                    const allPaid = relevantGroups.every(g => e.payments?.[g.id] === true);
+                    if (paymentFilter === 'ok') matchesPayment = allPaid;
+                    if (paymentFilter === 'todo') matchesPayment = !allPaid;
+                }
             }
         }
 
         return matchesSearch && matchesGroup && matchesPayment;
     });
 
-    // --- PREPARATION LISTE MODALE INSCRIPTION ---
     const selectedGroupObj = groupes.find(g => g.id === selectedGroupId);
     const eligibleStudentsForEnrollment = eleves.filter(e => {
-        // Recherche dans la modale
         const matchesModalSearch = (e.nom + ' ' + e.prenom).toLowerCase().includes(enrollSearch.toLowerCase());
-        // Pas déjà inscrit dans ce groupe
         const notAlreadyIn = !(e.enrolledGroupIds && e.enrolledGroupIds.includes(selectedGroupId));
         return matchesModalSearch && notAlreadyIn;
     });
@@ -333,7 +347,6 @@ export default function Annuaire() {
                         Annuaire Élèves ({filteredEleves.length})
                     </h2>
                     
-                    {/* TOGGLE ARCHIVES */}
                     <div className="flex items-center bg-gray-50 px-3 py-1.5 rounded-lg border border-gray-200 hover:bg-white transition cursor-pointer" onClick={() => setShowArchived(!showArchived)}>
                         <span className="text-xs font-bold text-gray-600 mr-2 select-none">
                             Voir cours terminés
@@ -345,22 +358,20 @@ export default function Annuaire() {
                 </div>
 
                 <div className="flex flex-col md:flex-row gap-4 items-end md:items-center justify-between">
-                    {/* BARRE DE RECHERCHE NOM */}
-                    <div className="relative w-full md:w-1/3">
+                    <div className="relative w-full md:w-1/4">
                         <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400">🔍</span>
                         <input
                             type="text"
-                            placeholder="Rechercher nom ou prénom..."
+                            placeholder="Nom / Prénom..."
                             value={searchTerm}
                             onChange={(e) => setSearchTerm(e.target.value)}
                             className="w-full pl-9 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-teal-500 outline-none text-sm shadow-sm"
                         />
                     </div>
 
-                    {/* SÉLECTEUR DE GROUPE */}
-                    <div className="relative w-full md:w-1/2 flex gap-2 items-end">
-                        <div className="flex-1">
-                            <label className="block text-[10px] font-bold text-gray-500 uppercase mb-1 ml-1">Filtrer par Groupe</label>
+                    <div className="flex-1 w-full grid grid-cols-1 md:grid-cols-3 gap-2 items-end">
+                        <div>
+                            <label className="block text-[10px] font-bold text-gray-500 uppercase mb-1 ml-1">Groupe</label>
                             <select
                                 value={selectedGroupId}
                                 onChange={(e) => setSelectedGroupId(e.target.value)}
@@ -378,13 +389,12 @@ export default function Annuaire() {
                             </select>
                         </div>
 
-                         {/* NOUVEAU : FILTRE PAIEMENT */}
                          <div>
                             <label className="block text-[10px] font-bold text-gray-500 uppercase mb-1 ml-1">Paiement</label>
                             <select
                                 value={paymentFilter}
                                 onChange={(e) => setPaymentFilter(e.target.value)}
-                                className={`border py-2 px-3 rounded-lg text-sm font-bold outline-none focus:ring-2 shadow-sm transition h-[38px] ${paymentFilter === 'todo' ? 'bg-red-50 text-red-600 border-red-200' : (paymentFilter === 'ok' ? 'bg-teal-50 text-teal-600 border-teal-200' : 'bg-white text-gray-600 border-gray-200')}`}
+                                className={`w-full border py-2 px-3 rounded-lg text-sm font-bold outline-none focus:ring-2 shadow-sm transition h-[38px] ${paymentFilter === 'todo' ? 'bg-red-50 text-red-600 border-red-200' : (paymentFilter === 'ok' ? 'bg-teal-50 text-teal-600 border-teal-200' : 'bg-white text-gray-600 border-gray-200')}`}
                             >
                                 <option value="all">Tout</option>
                                 <option value="ok">✅ À jour</option>
@@ -392,17 +402,28 @@ export default function Annuaire() {
                             </select>
                         </div>
 
-                        {/* BOUTON AJOUT RAPIDE AU GROUPE */}
-                        {selectedGroupId && (
-                            <button 
-                                onClick={() => { setEnrollSearch(""); setShowEnrollModal(true); }}
-                                className="bg-purple-600 text-white px-3 py-2 rounded-lg font-bold text-sm hover:bg-purple-700 shadow-md transition flex items-center gap-1 h-[38px] whitespace-nowrap"
-                                title="Ajouter un élève existant à ce cours"
+                        <div>
+                            <label className="block text-[10px] font-bold text-gray-500 uppercase mb-1 ml-1">Période de paiement</label>
+                            <select
+                                value={paymentPeriod}
+                                onChange={(e) => setPaymentPeriod(e.target.value)}
+                                className="w-full border border-gray-200 py-2 px-3 rounded-lg text-sm font-bold outline-none focus:ring-2 focus:ring-teal-500 bg-gray-50 text-gray-700 h-[38px]"
                             >
-                                👤+ Inscrire
-                            </button>
-                        )}
+                                <option value="all">Toutes périodes</option>
+                                <option value="started">Cours actuels (Démarrés)</option>
+                                <option value="future">Trimestres futurs</option>
+                            </select>
+                        </div>
                     </div>
+
+                    {selectedGroupId && (
+                        <button 
+                            onClick={() => { setEnrollSearch(""); setShowEnrollModal(true); }}
+                            className="bg-purple-600 text-white px-3 py-2 rounded-lg font-bold text-sm hover:bg-purple-700 shadow-md transition flex items-center gap-1 h-[38px] whitespace-nowrap"
+                        >
+                            👤+ Inscrire
+                        </button>
+                    )}
                 </div>
             </div>
 
@@ -431,10 +452,10 @@ export default function Annuaire() {
             {/* TABLEAU LISTE */}
             <div className="bg-white rounded-xl shadow overflow-hidden border border-gray-200">
                 {loading ? (
-                    <div className="p-10 text-center text-gray-500 font-medium">Chargement de l'annuaire...</div>
+                    <div className="p-10 text-center text-gray-500 font-medium">Chargement...</div>
                 ) : filteredEleves.length === 0 ? (
                     <div className="p-10 text-center text-gray-400 italic">
-                        Aucun élève ne correspond à vos critères.
+                        Aucun élève trouvé.
                     </div>
                 ) : (
                     <div className="overflow-x-auto">
@@ -472,6 +493,20 @@ export default function Annuaire() {
                                                         displayGroups.map(g => {
                                                             const active = isGroupActive(g);
                                                             const isPaid = eleve.payments?.[g.id] === true;
+                                                            
+                                                            const hasStarted = new Date() >= g._debut;
+                                                            
+                                                            // Style dynamique pour le bouton paiement
+                                                            let payBtnClass = "";
+                                                            if (isPaid) {
+                                                                payBtnClass = "bg-green-500 text-white border-green-600";
+                                                            } else {
+                                                                // Si non payé : rouge si démarré, jaune/orange si futur
+                                                                payBtnClass = hasStarted 
+                                                                    ? "bg-red-500 text-white border-red-600" 
+                                                                    : "bg-amber-400 text-amber-900 border-amber-500 opacity-80";
+                                                            }
+
                                                             return (
                                                                 <div key={g.id} className="flex items-center">
                                                                     <span 
@@ -479,27 +514,22 @@ export default function Annuaire() {
                                                                         ${active 
                                                                             ? 'bg-teal-50 text-teal-800 border-teal-200' 
                                                                             : 'bg-gray-100 text-gray-400 border-gray-200 grayscale'}`}
-                                                                        title={!active ? "Cours terminé" : "Cours actif"}
+                                                                        title={!active ? "Cours terminé" : (hasStarted ? "Cours en cours" : "Trimestre futur")}
                                                                     >
-                                                                        {!active && <span className="text-[10px]">🚫</span>}
+                                                                        {!hasStarted && active && <span className="text-[10px]">⏳</span>}
                                                                         {g.nom} • {JOURS[g.jour]} {g.heureDebut}
                                                                     </span>
-                                                                    {/* TOGGLE PAIEMENT */}
                                                                     <button 
                                                                         onClick={() => togglePaymentStatus(eleve.id, g.id, isPaid)}
-                                                                        className={`px-2 py-1 rounded-r-md text-[10px] font-bold border-t border-b border-r h-[26px] transition-all hover:brightness-110 active:scale-95
-                                                                        ${isPaid 
-                                                                            ? 'bg-green-500 text-white border-green-600' 
-                                                                            : 'bg-red-500 text-white border-red-600'}`}
-                                                                        title={isPaid ? "Marquer comme non payé" : "Marquer comme payé"}
+                                                                        className={`px-2 py-1 rounded-r-md text-[10px] font-bold border-t border-b border-r h-[26px] transition-all hover:brightness-110 active:scale-95 ${payBtnClass}`}
                                                                     >
-                                                                        {isPaid ? "€ OK" : "€ --"}
+                                                                        {isPaid ? "€ OK" : (hasStarted ? "€ --" : "€ FUTUR")}
                                                                     </button>
                                                                 </div>
                                                             )
                                                         })
                                                     ) : (
-                                                        <span className="text-gray-400 italic text-xs py-1">Aucun groupe actif.</span>
+                                                        <span className="text-gray-400 italic text-xs py-1">Aucun groupe.</span>
                                                     )}
                                                 </div>
                                             </td>
@@ -510,10 +540,10 @@ export default function Annuaire() {
                                             </td>
                                             <td className="p-4 text-right align-middle">
                                                 <div className="flex items-center justify-end gap-2 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
-                                                    <button onClick={() => openEditModal(eleve)} className="bg-white hover:bg-blue-50 text-gray-400 hover:text-blue-600 border border-gray-200 hover:border-blue-200 p-2 rounded-lg transition shadow-sm" title="Éditer">
+                                                    <button onClick={() => openEditModal(eleve)} className="bg-white hover:bg-blue-50 text-gray-400 hover:text-blue-600 border border-gray-200 hover:border-blue-200 p-2 rounded-lg transition shadow-sm">
                                                         ✏️
                                                     </button>
-                                                    <button onClick={() => demanderSuppression(eleve.id, `${eleve.prenom} ${eleve.nom}`)} className="bg-white hover:bg-red-50 text-gray-400 hover:text-red-600 border border-gray-200 hover:border-red-200 p-2 rounded-lg transition shadow-sm" title="Supprimer">
+                                                    <button onClick={() => demanderSuppression(eleve.id, `${eleve.prenom} ${eleve.nom}`)} className="bg-white hover:bg-red-50 text-gray-400 hover:text-red-600 border border-gray-200 hover:border-red-200 p-2 rounded-lg transition shadow-sm">
                                                         🗑️
                                                     </button>
                                                 </div>
@@ -549,7 +579,7 @@ export default function Annuaire() {
                             />
                             <div className="max-h-64 overflow-y-auto border rounded-lg divide-y divide-gray-100">
                                 {eligibleStudentsForEnrollment.length === 0 ? (
-                                    <div className="p-4 text-center text-gray-400 text-sm italic">Aucun élève trouvé (ou déjà inscrit).</div>
+                                    <div className="p-4 text-center text-gray-400 text-sm italic">Aucun élève trouvé.</div>
                                 ) : (
                                     eligibleStudentsForEnrollment.map(eleve => (
                                         <div key={eleve.id} className="p-3 hover:bg-purple-50 flex justify-between items-center group cursor-pointer" onClick={() => handleEnrollStudent(eleve.id)}>
@@ -574,7 +604,6 @@ export default function Annuaire() {
                 <div className="fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-50 backdrop-blur-sm" onClick={() => setEleveEnEdition(null)}>
                     <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[90vh] animate-in fade-in zoom-in-95" onClick={e => e.stopPropagation()}>
                         
-                        {/* HEADER MODAL */}
                         <div className="bg-gradient-to-r from-teal-800 to-teal-700 p-5 text-white flex justify-between items-center relative shadow-md shrink-0">
                             <div>
                                 <h3 className="text-xl font-bold font-playfair flex items-center gap-2">
@@ -585,33 +614,16 @@ export default function Annuaire() {
                             <button onClick={() => setEleveEnEdition(null)} className="bg-white/20 hover:bg-white/30 text-white rounded-full w-8 h-8 flex items-center justify-center transition">✕</button>
                         </div>
 
-                        {/* ONGLETS DE NAVIGATION */}
                         <div className="flex border-b border-gray-200 bg-gray-50 shrink-0">
-                            <button 
-                                onClick={() => setActiveTab('details')} 
-                                className={`flex-1 py-3 font-bold text-sm transition border-b-2 ${activeTab === 'details' ? 'text-teal-800 border-teal-800 bg-white' : 'text-gray-500 border-transparent hover:text-gray-700'}`}
-                            >
-                                👤 Détails & Groupes
-                            </button>
-                            <button 
-                                onClick={() => setActiveTab('history')} 
-                                className={`flex-1 py-3 font-bold text-sm transition border-b-2 ${activeTab === 'history' ? 'text-teal-800 border-teal-800 bg-white' : 'text-gray-500 border-transparent hover:text-gray-700'}`}
-                            >
-                                📜 Historique
-                            </button>
+                            <button onClick={() => setActiveTab('details')} className={`flex-1 py-3 font-bold text-sm transition border-b-2 ${activeTab === 'details' ? 'text-teal-800 border-teal-800 bg-white' : 'text-gray-500 border-transparent hover:text-gray-700'}`}>👤 Détails & Groupes</button>
+                            <button onClick={() => setActiveTab('history')} className={`flex-1 py-3 font-bold text-sm transition border-b-2 ${activeTab === 'history' ? 'text-teal-800 border-teal-800 bg-white' : 'text-gray-500 border-transparent hover:text-gray-700'}`}>📜 Historique</button>
                         </div>
 
-                        {/* CONTENU SCROLLABLE */}
                         <div className="p-6 overflow-y-auto bg-gray-50/50 flex-1 space-y-6">
-                            
-                            {/* --- ONGLET DETAILS --- */}
                             {activeTab === 'details' && (
                                 <>
-                                    {/* BLOC 1: INFOS */}
                                     <div className="bg-white p-5 rounded-xl shadow-sm border border-gray-200">
-                                        <h4 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-4 border-b pb-2 flex items-center gap-2">
-                                            <span>📝</span> Informations
-                                        </h4>
+                                        <h4 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-4 border-b pb-2 flex items-center gap-2"><span>📝</span> Informations</h4>
                                         <div className="grid grid-cols-2 gap-4 mb-4">
                                             <div>
                                                 <label className="block text-xs font-bold text-gray-600 mb-1">Nom</label>
@@ -633,21 +645,12 @@ export default function Annuaire() {
                                                     <input type="number" value={editCredits} onChange={(e) => setEditCredits(e.target.value)} className="w-full border border-purple-200 p-2.5 rounded-lg font-bold bg-purple-50 text-purple-700 focus:ring-2 focus:ring-purple-500 outline-none pl-9" />
                                                     <span className="absolute left-3 top-2.5 text-purple-400">🎫</span>
                                                 </div>
-                                                <p className="text-[9px] text-gray-400 mt-1 italic leading-tight">La modification du solde créera une ligne d'historique.</p>
                                             </div>
                                         </div>
                                     </div>
 
-                                    {/* BLOC 2: GROUPES */}
                                     <div className="bg-white p-5 rounded-xl shadow-sm border border-gray-200">
-                                        <h4 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2 border-b pb-2 flex items-center gap-2">
-                                            <span>📅</span> Inscriptions Récurrentes
-                                        </h4>
-                                        <div className="flex justify-between items-center mb-3">
-                                            <p className="text-[11px] text-gray-400 italic">Cochez les créneaux habituels de l'élève.</p>
-                                            <span className="text-[10px] bg-teal-50 text-teal-700 px-2 py-0.5 rounded border border-teal-100 font-bold">Actifs uniquement</span>
-                                        </div>
-                                        
+                                        <h4 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2 border-b pb-2 flex items-center gap-2"><span>📅</span> Inscriptions</h4>
                                         <div className="grid md:grid-cols-2 gap-2 max-h-48 overflow-y-auto pr-1">
                                             {groupes.filter(g => isGroupActive(g)).map(groupe => {
                                                 const estInscrit = eleveEnEdition.enrolledGroupIds?.includes(groupe.id);
@@ -661,23 +664,17 @@ export default function Annuaire() {
                                                     </label>
                                                 );
                                             })}
-                                            {groupes.filter(g => isGroupActive(g)).length === 0 && (
-                                                <p className="col-span-2 text-center text-gray-400 text-sm italic py-4">Aucun groupe actif disponible.</p>
-                                            )}
                                         </div>
                                     </div>
                                 </>
                             )}
 
-                            {/* --- ONGLET HISTORY --- */}
                             {activeTab === 'history' && (
                                 <div className="space-y-3">
                                     {loadingHistory ? (
-                                        <div className="text-center text-gray-400 py-10">Chargement de l'historique...</div>
+                                        <div className="text-center text-gray-400 py-10">Chargement...</div>
                                     ) : history.length === 0 ? (
-                                        <div className="text-center text-gray-400 italic py-10 bg-white rounded-xl border border-dashed border-gray-300">
-                                            Aucun historique disponible.
-                                        </div>
+                                        <div className="text-center text-gray-400 italic py-10 bg-white rounded-xl border border-dashed border-gray-300">Aucun historique.</div>
                                     ) : (
                                         history.map(item => {
                                             const dateItem = item.date ? item.date.toDate() : new Date();
@@ -691,15 +688,9 @@ export default function Annuaire() {
                                                             </span>
                                                             <span className="font-bold text-gray-700">{item.motif}</span>
                                                         </div>
-                                                        <div className="text-xs text-gray-400 flex gap-2">
-                                                            <span>📅 {dateItem.toLocaleDateString('fr-FR')}</span>
-                                                            <span>🕒 {dateItem.toLocaleTimeString('fr-FR', {hour: '2-digit', minute:'2-digit'})}</span>
-                                                            {item.seanceDate && <span className="text-gray-500">• Séance : {item.seanceDate}</span>}
-                                                        </div>
+                                                        <div className="text-xs text-gray-400">📅 {dateItem.toLocaleDateString('fr-FR')} {item.seanceDate && `• Séance : ${item.seanceDate}`}</div>
                                                     </div>
-                                                    <button onClick={() => deleteHistoryItem(item.id)} className="text-gray-300 hover:text-red-500 p-2 rounded hover:bg-red-50 transition" title="Supprimer cette ligne">
-                                                        🗑️
-                                                    </button>
+                                                    <button onClick={() => deleteHistoryItem(item.id)} className="text-gray-300 hover:text-red-500 p-2 rounded hover:bg-red-50 transition">🗑️</button>
                                                 </div>
                                             )
                                         })
@@ -708,24 +699,12 @@ export default function Annuaire() {
                             )}
                         </div>
 
-                        {/* FOOTER MODAL (BOUTONS) */}
-                        {activeTab === 'details' && (
-                            <div className="p-4 bg-white border-t border-gray-200 flex justify-end gap-3 shrink-0">
-                                <button onClick={() => setEleveEnEdition(null)} className="px-5 py-2.5 text-gray-500 font-bold hover:bg-gray-100 rounded-lg transition text-sm">
-                                    Annuler
-                                </button>
-                                <button onClick={sauvegarderEdition} className="px-6 py-2.5 bg-teal-700 text-white font-bold rounded-lg hover:bg-teal-800 shadow-md transform active:scale-95 transition text-sm">
-                                    Enregistrer
-                                </button>
-                            </div>
-                        )}
-                        {activeTab === 'history' && (
-                            <div className="p-4 bg-white border-t border-gray-200 flex justify-end shrink-0">
-                                <button onClick={() => setEleveEnEdition(null)} className="px-5 py-2.5 text-gray-600 font-bold hover:bg-gray-100 rounded-lg transition text-sm">
-                                    Fermer
-                                </button>
-                            </div>
-                        )}
+                        <div className="p-4 bg-white border-t border-gray-200 flex justify-end gap-3 shrink-0">
+                            <button onClick={() => setEleveEnEdition(null)} className="px-5 py-2.5 text-gray-500 font-bold hover:bg-gray-100 rounded-lg transition text-sm">Annuler</button>
+                            {activeTab === 'details' && (
+                                <button onClick={sauvegarderEdition} className="px-6 py-2.5 bg-teal-700 text-white font-bold rounded-lg hover:bg-teal-800 shadow-md transform active:scale-95 transition text-sm">Enregistrer</button>
+                            )}
+                        </div>
                     </div>
                 </div>
             )}

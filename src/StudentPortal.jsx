@@ -157,7 +157,6 @@ export default function StudentPortal() {
             }));
 
             // --- AMÉLIORATION : Tri Chronologique ---
-            // On combine et on trie tout de suite par heureDebut pour corriger l'ordre sur mobile
             const tousLesCreneaux = [...groupesDuJour, ...ajoutsDuJour];
             tousLesCreneaux.sort((a, b) => a.heureDebut.localeCompare(b.heureDebut));
 
@@ -178,6 +177,9 @@ export default function StudentPortal() {
 
                 const statusMap = attendanceDoc?.status || {};
                 const waitingListIds = attendanceDoc?.waitingList || [];
+                
+                // Récupération de la note de séance si elle existe
+                const noteSeance = attendanceDoc?.note || "";
 
                 // --- 1. LISTE DES PRÉSENTS ---
                 const recurrentsIds = (!groupe.isExceptionnel)
@@ -210,7 +212,7 @@ export default function StudentPortal() {
                 // --- CALCUL SI PASSÉ ---
                 const [h, m] = groupe.heureDebut.split(':').map(Number);
                 const sessionEnd = new Date(dateDuJour);
-                sessionEnd.setHours(h, m + (groupe.duree || 60), 0, 0); // On considère passé à la fin du cours
+                sessionEnd.setHours(h, m + (groupe.duree || 60), 0, 0); 
                 const isPast = now > sessionEnd;
 
                 planning.push({
@@ -232,7 +234,8 @@ export default function StudentPortal() {
                     isExceptionnel: !!groupe.isExceptionnel,
                     estAnnule,
                     motifAnnulation,
-                    isPast
+                    isPast,
+                    noteSeance // Ajout de la note au planning
                 });
             });
         }
@@ -242,22 +245,16 @@ export default function StudentPortal() {
         const isViewingCurrentWeek = startOfCurrentWeek.getTime() === lundiActuel.getTime();
 
         if (isViewingCurrentWeek && !autoSwitchDone.current) {
-            // Est-ce qu'il reste des cours actifs (ni passés, ni annulés) cette semaine ?
             const hasFutureCourses = planning.some(s => !s.isPast && !s.estAnnule);
-
             if (!hasFutureCourses) {
-                // Semaine terminée ou vide -> on passe à la suivante
                 setLundiActuel(prev => ajouterJours(prev, 7));
                 autoSwitchDone.current = true;
                 setLoadingPlanning(false);
-                return; // On stoppe l'affichage de cette semaine pour charger la suivante
+                return; 
             }
         }
         
-        // Si on est sur la semaine courante et qu'on n'a pas basculé, on marque comme fait pour ne pas gêner le bouton "précédent"
-        if (isViewingCurrentWeek) {
-            autoSwitchDone.current = true;
-        }
+        if (isViewingCurrentWeek) autoSwitchDone.current = true;
 
         setSessionsSemaine(planning);
         setLoadingPlanning(false);
@@ -309,9 +306,20 @@ export default function StudentPortal() {
 
     const hasSubscriptions = student.enrolledGroupIds && student.enrolledGroupIds.length > 0;
     let subscriptionStatus = 'none';
-    if (hasSubscriptions) {
-        const allPaid = student.enrolledGroupIds.every(gid => student.payments?.[gid] === true);
-        subscriptionStatus = allPaid ? 'ok' : 'late';
+
+    // --- LOGIQUE PAIEMENT CORRIGÉE (Étape A) ---
+    if (hasSubscriptions && donneesGlobales?.allGroups) {
+        const now = new Date();
+        const unpaidAndStarted = student.enrolledGroupIds.filter(gid => {
+            const groupData = donneesGlobales.allGroups.find(g => g.id === gid);
+            const isPaid = student.payments?.[gid] === true;
+            if (!groupData || isPaid) return false;
+
+            const startDate = groupData.dateDebut?.toDate ? groupData.dateDebut.toDate() : new Date(groupData.dateDebut);
+            startDate.setHours(0,0,0,0);
+            return now >= startDate; // On ne demande le paiement que si le cours a démarré
+        });
+        subscriptionStatus = unpaidAndStarted.length > 0 ? 'late' : 'ok';
     }
 
     return (
@@ -337,9 +345,7 @@ export default function StudentPortal() {
                     )}
                 </div>
 
-                {/* --- NAVIGATION SEMAINE AVEC SÉLECTEUR DE DATE --- */}
                 <div className="flex flex-col items-center justify-center">
-                    {/* AMÉLIORATION : Affichage des dates */}
                     <span className="text-[10px] uppercase font-bold text-gray-400 mb-0.5 tracking-wide">
                         {formaterDateSimple(lundiActuel)} - {formaterDateSimple(dimancheFin)}
                     </span>
@@ -356,7 +362,7 @@ export default function StudentPortal() {
                         <div className="relative group">
                             <input 
                                 type="date" 
-                                id="date-picker-prof" 
+                                id="date-picker-student" 
                                 className="absolute opacity-0 w-0 h-0" 
                                 onChange={(e) => {
                                     if(e.target.value) setLundiActuel(getLundi(new Date(e.target.value)));
@@ -366,9 +372,9 @@ export default function StudentPortal() {
                                 type="button" 
                                 onClick={() => {
                                     try {
-                                        document.getElementById('date-picker-prof').showPicker();
+                                        document.getElementById('date-picker-student').showPicker();
                                     } catch (e) {
-                                        document.getElementById('date-picker-prof').focus();
+                                        document.getElementById('date-picker-student').focus();
                                     }
                                 }}
                                 className="w-8 h-8 flex items-center justify-center hover:bg-white rounded-md text-gray-600 font-bold transition cursor-pointer"
@@ -497,10 +503,18 @@ export default function StudentPortal() {
 
                                             return (
                                                 <div key={sess.seanceId} onClick={() => setSelectedSession(sess)} className={`p-3 rounded-lg border shadow-sm ${bg} ${containerStyle}`}>
-                                                    <div>
+                                                    <div className="flex-1">
                                                         <div className="font-bold text-gray-800">{sess.groupe.nom}</div>
                                                         <div className="text-xs font-mono text-gray-500">{sess.groupe.heureDebut}</div>
                                                         {sess.groupe.theme && <div className="text-xs text-purple-600 italic mt-0.5">"{sess.groupe.theme}"</div>}
+                                                        
+                                                        {/* COMMENTAIRE SÉANCE MOBILE (Étape C) */}
+                                                        {sess.noteSeance && (
+                                                            <div className="text-[10px] bg-amber-50 text-amber-800 p-1.5 rounded border border-amber-200 mt-2 font-medium leading-tight">
+                                                                📢 {sess.noteSeance}
+                                                            </div>
+                                                        )}
+
                                                         <div className={`text-xs mt-1 ${isFull && !sess.isPast ? "text-red-500" : "text-green-600"}`}>
                                                             {getPlacesLabel(sess.placesRestantes)}
                                                         </div>
@@ -655,6 +669,13 @@ export default function StudentPortal() {
                                                     {sess.groupe.theme && !sess.estInscritRecurrent && !sess.isMeGuest && (
                                                         <div className="text-[9px] text-purple-700 italic truncate mt-1 pt-1 border-t border-purple-100">
                                                             "{sess.groupe.theme}"
+                                                        </div>
+                                                    )}
+                                                    
+                                                    {/* COMMENTAIRE SÉANCE DESKTOP (Étape C) */}
+                                                    {sess.noteSeance && (
+                                                        <div className="text-[9px] bg-amber-50 text-amber-800 p-1 rounded border border-amber-200 mt-1 font-medium leading-tight">
+                                                            📢 {sess.noteSeance}
                                                         </div>
                                                     )}
                                                 </div>
