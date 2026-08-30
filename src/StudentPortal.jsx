@@ -277,14 +277,68 @@ export default function StudentPortal() {
                     </button>
                 </div>
 
-                <div className="flex items-center bg-gray-100 rounded-lg p-1">
-                    <button onClick={() => setLundiActuel(prev => ajouterJours(prev, -7))} className="w-8 h-8 rounded hover:bg-white text-gray-600 font-bold">←</button>
-                    <span className="text-xs font-bold text-gray-700 px-2 uppercase hidden sm:block">
-                        {lundiActuel.getDate()} {lundiActuel.toLocaleDateString('fr-FR', { month: 'short' })} - {dimancheFin.getDate()} {dimancheFin.toLocaleDateString('fr-FR', { month: 'short' })}
-                    </span>
-                    <button onClick={() => setLundiActuel(prev => ajouterJours(prev, 7))} className="w-8 h-8 rounded hover:bg-white text-gray-600 font-bold">→</button>
-                </div>
+              {/* NAVIGATION SEMAINE AVEC SÉLECTEUR DE DATE */}
+<div className="flex items-center bg-gray-100 rounded-lg p-1 gap-1">
+    
+    {/* Bouton Précédent */}
+    <button 
+        onClick={() => setLundiActuel(prev => ajouterJours(prev, -7))} 
+        className="w-8 h-8 flex items-center justify-center rounded hover:bg-white text-gray-600 font-bold transition"
+    >
+        ←
+    </button>
+    
+    {/* --- SÉLECTEUR MOBILE (Icône seule) --- */}
+    <div className="relative md:hidden">
+        <input 
+            type="date" 
+            className="w-8 h-8 opacity-0 absolute inset-0 cursor-pointer z-10"
+            onChange={(e) => {
+                if(e.target.value) setLundiActuel(getLundi(new Date(e.target.value)));
+            }}
+        />
+        <button className="w-8 h-8 flex items-center justify-center hover:bg-white rounded text-gray-600 font-bold transition">
+            📅
+        </button>
+    </div>
+    
+{/* --- SÉLECTEUR DESKTOP (Texte complet + Icone) --- */}
+    <div className="relative hidden md:block">
+        {/* 1. L'input est caché mais possède un ID unique */}
+        <input 
+            type="date" 
+            id="date-picker-desktop"
+            className="absolute opacity-0 w-0 h-0" 
+            onChange={(e) => {
+                if(e.target.value) setLundiActuel(getLundi(new Date(e.target.value)));
+            }}
+        />
+        
+        {/* 2. Le bouton déclenche l'ouverture du calendrier via l'ID */}
+        <button 
+            onClick={() => {
+                try {
+                    document.getElementById('date-picker-desktop').showPicker();
+                } catch (error) {
+                    // Fallback pour vieux navigateurs: on focus juste
+                    document.getElementById('date-picker-desktop').focus();
+                }
+            }}
+            className="text-xs font-bold text-gray-700 px-2 uppercase cursor-pointer hover:text-teal-600 transition flex items-center gap-2 h-8 hover:bg-white rounded"
+        >
+            <span className="text-lg pb-1">📅</span>
+            {lundiActuel.getDate()} {lundiActuel.toLocaleDateString('fr-FR', { month: 'short' })} - {dimancheFin.getDate()} {dimancheFin.toLocaleDateString('fr-FR', { month: 'short' })} {dimancheFin.getFullYear()}
+        </button>
+    </div>
 
+    {/* Bouton Suivant */}
+    <button 
+        onClick={() => setLundiActuel(prev => ajouterJours(prev, 7))} 
+        className="w-8 h-8 flex items-center justify-center rounded hover:bg-white text-gray-600 font-bold transition"
+    >
+        →
+    </button>
+</div>
                 <div className="flex items-center gap-3">
                     {/* BOUTON FILTRE MES COURS */}
                     <button
@@ -298,7 +352,7 @@ export default function StudentPortal() {
                         onClick={() => setShowHistory(true)}
                         className={`md:hidden text-xs font-bold px-2 py-1 rounded-full border ${soldeClass}`}
                     >
-                        {student.absARemplacer} Cr.
+                        {student.absARemplacer} Séance(s)
                     </button>
 
                     <Link to="/" className="text-gray-400 hover:text-teal-600 text-xs font-bold mr-2 hidden md:block">Accueil</Link>
@@ -333,7 +387,9 @@ export default function StudentPortal() {
                             return (
                                 <div key={offset} className="pl-3 border-l-2 border-gray-200 relative">
                                     <div className="absolute -left-[5px] top-0 w-2 h-2 rounded-full bg-teal-500"></div>
-                                    <h3 className="font-bold text-gray-500 mb-2 uppercase text-xs">{JOURS[dateJour.getDay()]} {dateJour.getDate()}</h3>
+                                    <h3 className="font-bold text-gray-500 mb-2 uppercase text-xs">
+    {dateJour.toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}
+</h3>
                                     <div className="space-y-2">
                                         {sessions.map(sess => {
                                             if (sess.estAnnule) {
