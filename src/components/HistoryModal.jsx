@@ -54,15 +54,30 @@ export default function HistoryModal({ student, onClose }) {
                                 const isPositive = item.delta > 0;
                                 const isNeutral = item.delta === 0;
 
+                                // Date à laquelle l'opération a été réalisée dans l'application
+                                const dateAction = item.date?.toDate();
+
                                 return (
                                     <div key={item.id} className="bg-white p-3 rounded-lg shadow-sm border border-gray-100 flex justify-between items-center">
                                         <div>
+                                            {/* Motif principal */}
                                             <div className="font-bold text-gray-800 text-sm">{item.motif}</div>
-                                            <div className="text-xs text-gray-400 mt-1">
-                                                {item.date?.toDate().toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
+
+                                            {/* NOUVEAU : Date de la séance concernée bien en évidence */}
+                                            {item.seanceDate && (
+                                                <div className="text-xs font-semibold text-teal-700 mt-1">
+                                                    📅 Séance du : {item.seanceDate}
+                                                </div>
+                                            )}
+
+                                            {/* Date de l'opération reléguée en petit */}
+                                            <div className="text-[10px] text-gray-400 mt-0.5 italic">
+                                                Fait le {dateAction ? dateAction.toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '...'}
                                             </div>
                                         </div>
-                                        <div className={`font-bold text-lg ${isNeutral ? 'text-gray-400' : (isPositive ? 'text-green-600' : 'text-red-500')}`}>
+
+                                        {/* Compteur Delta (-1 / +1) */}
+                                        <div className={`font-bold text-lg pl-3 ${isNeutral ? 'text-gray-400' : (isPositive ? 'text-green-600' : 'text-red-500')}`}>
                                             {isPositive ? '+' : ''}{item.delta}
                                         </div>
                                     </div>

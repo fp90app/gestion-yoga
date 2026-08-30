@@ -182,7 +182,13 @@ export default function StudentSessionDetail({ session, student, onClose, onUpda
     const toggleMyPresence = () => {
         if (isPast) return;
         const isAbsentNow = myStatus === 'absent' || myStatus === 'absent_announced';
-        if (isAbsentNow && isPhysicallyFull) return toast.error("Cours complet.");
+
+        if (isAbsentNow) {
+            const amIReplaced = Object.values(replacementLinks).includes(myId);
+            if (amIReplaced) {
+                return toast.error("Votre place a été réservée par un autre élève.");
+            }
+        }
 
         let actionType = 'signal_absence';
         let isLate = false;
@@ -235,6 +241,8 @@ export default function StudentSessionDetail({ session, student, onClose, onUpda
 
     const bookSpot = () => {
         if (isPast) return;
+        if (isPhysicallyFull) return toast.error("Le cours est complet.");
+
         triggerConfirmation('book', () => handleAction(async () => {
             const batch = writeBatch(db);
             const ref = doc(db, "attendance", seanceId);
@@ -383,7 +391,10 @@ export default function StudentSessionDetail({ session, student, onClose, onUpda
                                 const isAbsent = !isPresent;
                                 const replacementId = Object.keys(replacementLinks).find(k => replacementLinks[k] === eleve.id);
                                 const replacement = replacementId ? invites.find(i => i.id === replacementId) : null;
-                                const cannotReclaim = isMe && isAbsent && isPhysicallyFull;
+
+                                const amIReplaced = isMe ? !!replacementId : false;
+                                const cannotReclaim = isMe && isAbsent && amIReplaced;
+
                                 let borderClass = isPresent ? 'border-teal-500' : 'border-red-300 bg-red-50/20';
                                 if (isMe) borderClass += " ring-2 ring-teal-200";
 
@@ -406,7 +417,7 @@ export default function StudentSessionDetail({ session, student, onClose, onUpda
                                                 {!isMe && (
                                                     <div className="text-right">
                                                         <span className={`block text-xs font-bold ${isPresent ? 'text-teal-600' : 'text-red-400'}`}>{isPresent ? 'Présent' : 'Absent'}</span>
-                                                        {!isPresent && !replacement && !myStatus && !processing && !isTitulaire && !isPast && (
+                                                        {!isPresent && !replacement && !myStatus && !processing && !isTitulaire && !isPast && !isPhysicallyFull && (
                                                             <button onClick={(e) => { e.stopPropagation(); bookSpot(); }} className="mt-1.5 bg-purple-600 text-white text-[10px] px-3 py-1.5 rounded-lg font-bold hover:bg-purple-700 shadow-md flex items-center gap-1"><span>⚡ Remplacer</span></button>
                                                         )}
                                                     </div>
@@ -435,7 +446,7 @@ export default function StudentSessionDetail({ session, student, onClose, onUpda
                             return (
                                 <div key={`empty-${index}`} className={`relative p-4 rounded-xl border-2 border-dashed border-gray-300 bg-gray-50 flex flex-col justify-center items-center min-h-[100px] group transition-all ${isPast ? 'opacity-50' : 'hover:border-teal-400 hover:bg-white'}`}>
                                     <div className="text-gray-400 text-xs font-bold uppercase mb-2 tracking-widest group-hover:text-teal-600">Place Libre</div>
-                                    {!isTitulaire && !myStatus && !processing && !isPast && <button onClick={bookSpot} className="px-6 py-2 bg-white border border-gray-300 rounded-lg text-sm font-bold text-gray-600 hover:text-white hover:bg-teal-600 hover:border-teal-600 shadow-sm transition">Réserver</button>}
+                                    {!isTitulaire && !myStatus && !processing && !isPast && !isPhysicallyFull && <button onClick={bookSpot} className="px-6 py-2 bg-white border border-gray-300 rounded-lg text-sm font-bold text-gray-600 hover:text-white hover:bg-teal-600 hover:border-teal-600 shadow-sm transition">Réserver</button>}
                                 </div>
                             );
                         })}
